@@ -16,6 +16,22 @@ const FOUR_UNITS = Array.from({ length: 4 }, () => ['user', 'call1', 'result']).
 // A system/message in the third of four units (affordable detour) vs the first (gutted).
 const BARRIER_NEAR = [...TWO_UNITS, 'user', 'call1', 'result', 'system', 'user', 'call1', 'result']
 const BARRIER_EARLY = ['system', 'user', 'call1', 'result', 'system', ...FOUR_UNITS]
+// F1: the *ratio*, not the barrierCut>startIndex guard, must decline the detour.
+// Six units with the first in-history system/message inside unit 2: the detour
+// would keep 5 of 6 units (barrierShadowed 3 vs shadowed 16), so only the ratio
+// can refuse it. Under `releasesEnough = true` this flips to applied and releases
+// 5 units instead of 1.
+const RATIO_DECLINES = [
+  'system', 'user', 'call1', 'result', 'user', 'system', 'call1', 'result',
+  'user', 'call1', 'result', 'user', 'call1', 'result', 'user', 'call1', 'result',
+  'user', 'call1', 'result'
+]
+// F1 boundary: barrierShadowed * 2 === shadowed exactly (4 * 2 === 8), so the
+// comparison must be inclusive for the detour to be applied.
+const RATIO_BOUNDARY = [
+  'system', 'user', 'call1', 'result', 'user', 'user', 'system', 'call1', 'result',
+  'user', 'call1', 'result'
+]
 
 test('the selector requires a session and answers null for an unreadable surface', () => {
   assert.throws(() => selectCompactionRange(), TypeError)
@@ -164,6 +180,60 @@ test('an in-history system/message is kept when the detour still releases most o
   assertSafeRange(events, plan, 'barrier-kept')
 })
 
+/**
+ * Test-local unit boundaries: a unit starts at a 'user/message' whose leading cut
+ * the reference cut table balances. Deliberately written without the production
+ * splitSurfaceUnits(), so the two implementations can disagree and the assertion
+ * below can actually fail (F2: no self-oracle).
+ */
+function referenceUnitBounds(events, startIndex, endIndex) {
+  const cuts = referenceCuts(events)
+  const bounds = [startIndex]
+  for (let index = startIndex + 1; index <= endIndex; index += 1) {
+    if (events[index].type === 'user/message' && cuts[index] === true) bounds.push(index)
+  }
+  return bounds
+}
+
+test('the barrier ratio, not the guard, declines a detour that would gut the span (F1)', () => {
+  const events = build(RATIO_DECLINES)
+  const plan = planOf(events, { retainRecentUnits: 1 })
+  assert.equal(plan.status, 'shadow', plan.reason)
+  assert.equal(plan.systemBarrier, 'crossed')
+  assert.equal(plan.systemBarrierPreference, 'declined')
+  // 6 units, and the policy cut would shadow 5 of them; the detour would keep 5
+  // units (releasing 3 nodes of 16), which is below the ratio threshold.
+  assert.deepEqual([plan.unitCount, plan.shadowedUnitCount, plan.retainedUnitCount], [6, 5, 1])
+  assert.match(plan.reason, /crossed/)
+  assertSafeRange(events, plan, 'ratio-declines')
+})
+
+test('the barrier ratio is inclusive at its exact threshold (F1 boundary)', () => {
+  const events = build(RATIO_BOUNDARY)
+  const plan = planOf(events, { retainRecentUnits: 1 })
+  assert.equal(plan.status, 'shadow', plan.reason)
+  // barrierShadowed (4) * 2 === shadowed (8): the inclusive compare accepts the
+  // detour; a strict compare would flip this to crossed/declined with 3 units.
+  assert.equal(plan.systemBarrierPreference, 'applied')
+  assert.equal(plan.systemBarrier, 'kept')
+  assert.deepEqual([plan.unitCount, plan.shadowedUnitCount, plan.retainedUnitCount], [4, 2, 2])
+  // The detour keeps one extra unit (2 instead of 1) and 4 extra nodes.
+  assert.deepEqual([plan.systemBarrierSkippedUnits, plan.systemBarrierSkippedNodes], [1, 4])
+  assertSafeRange(events, plan, 'ratio-boundary')
+})
+
+test('the unit model splits only at balanced user messages, per an independent reference (F2)', () => {
+  // Node 3 is a user/message injected while the step's tool call is still open:
+  // structurally it is not a unit boundary, and a splitter that ignored the cut
+  // table would start a unit there.
+  const events = build(['system', 'user', 'call1', 'user', 'result', 'user', 'call1', 'result'])
+  const nodes = sequences(events)
+  assert.equal(referenceCuts(events)[3], false, 'a mid-call user message is not a balanced cut')
+  const folded = foldSurfaceBalance(nodes, sessionOf(events).eventAt)
+  const units = splitSurfaceUnits(folded.entries, folded.cutBalanced, 1, nodes.length - 1)
+  assert.deepEqual(units.map((unit) => unit.start), referenceUnitBounds(events, 1, nodes.length - 1))
+  assert.ok(!units.some((unit) => unit.start === 3), 'no unit may start at the mid-call user message')
+})
 test('an in-history system/message is crossed rather than making a long session uncompactable', () => {
   const events = build(BARRIER_EARLY)
   const plan = planOf(events, { retainRecentUnits: 1 })
@@ -318,11 +388,20 @@ test('property: every returned span is C1-balanced, keeps node 0, and never spli
     selected += 1
     assert.equal(plan.edgeChecks, 'injected', 'the corpus must exercise the host injection path')
     assertSafeRange(events, plan, 'property #' + iteration)
+    // F2: the unit model is checked against the test's own reference boundaries,
+    // never against a recomputation with the production splitter.
+    const reference = referenceUnitBounds(events, plan.startIndex, plan.endIndex)
+    assert.equal(plan.shadowedUnitCount, reference.length)
+    // The retained tail must start a unit: at a user/message whose leading cut
+    // the reference balances. The span always ends at its last unit's end.
+    assert.equal(referenceCuts(events)[plan.endIndex + 1], true, 'the cut must be balanced')
+    assert.equal(plan.retainFrom, nodes[plan.endIndex + 1])
+    assert.equal(events[plan.endIndex + 1].type, 'user/message', 'the retained tail must start a unit')
+    // ...and the production splitter must agree with that reference boundary for
+    // boundary, which is what pins the unit model itself.
     const folded = foldSurfaceBalance(nodes, sessionOf(events).eventAt)
     const units = splitSurfaceUnits(folded.entries, folded.cutBalanced, plan.startIndex, plan.endIndex)
-    assert.equal(plan.shadowedUnitCount, units.length)
-    assert.deepEqual([units[0].start, units[units.length - 1].end], [plan.startIndex, plan.endIndex])
-    assert.equal(plan.retainFrom, nodes[plan.endIndex + 1])
+    assert.deepEqual(units.map((unit) => unit.start), reference)
     assert.equal(plan.retainedUnitCount + plan.shadowedUnitCount, plan.unitCount)
     if (trigger === 'context-overflow') assert.equal(plan.retainedUnitCount, 1)
     else assert.ok(plan.retainedUnitCount <= retainRecentUnits)
