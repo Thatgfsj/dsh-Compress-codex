@@ -205,13 +205,16 @@ test('compactNow refuses to commit a custom range through compactRegion', () => 
   assert.deepEqual(calls, [], 'refusing must not write through the wrong transaction')
 })
 
-test('the summary path delegates, and refuses an unprojected summary', async () => {
+test('the summary path delegates on a null request, and refuses a request without a projection', async () => {
   const delegating = mount()
   assert.equal((await delegating.engine.summarize({ messages: [] }, delegating.agent)).provider, 'fake')
   assert.deepEqual(delegating.calls, [['summarize']])
 
+  // #7 replaced the skeleton refusal with the C5 contract lock: a request whose
+  // projection is missing is still refused before any model call, and the real
+  // pipeline is covered by test/summarize.test.mjs.
   const building = mount({ hooks: hooksFor({ buildSummaryRequest: () => ({ prompt: 'codex' }) }) })
-  await assert.rejects(() => building.engine.summarize({ messages: [] }, building.agent), /owned by #6\/#7/)
+  await assert.rejects(() => building.engine.summarize({ messages: [] }, building.agent), /without a projection/)
 })
 
 test('toBaseConfig forwards only the official keys, so our policy keys never trip it', () => {
