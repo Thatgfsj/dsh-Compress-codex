@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The gate pipeline only reads the repository. Nothing here may need a token
+# with write scope, and branch protection gates exactly these three contexts:
+# ci / linux, ci / windows, ci / macos (docs/PLAN.md §4.3).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ci / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: windows, os: windows-latest }
+          - { name: macos, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # No install step by design: the test suite and lib/index.js must stay
+      # runnable with zero node_modules, so the gate can never be blocked by a
+      # registry outage or by a half-published @deepseek-ai prerelease.
+      - name: Unit tests
+        run: node --test "test/**/*.test.mjs"
+
+      # The `runner` context only exists inside steps, never at job level.
+      - name: Guard against touching a real DSH home
+        env:
+          DSH_HOME: ${{ runner.temp }}/dsh-home
+        run: node scripts/assert-isolated-home.mjs
+
+      - name: Package dry run
+        run: npm pack --dry-run
+
+  # Node 22 is the oldest engine this package claims (package.json engines.node),
+  # so the LTS job proves the declared floor rather than assuming it.
+  lts:
+    name: ci / node22
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Unit tests
+        run: node --test "test/**/*.test.mjs"
+
+      - name: Guard against touching a real DSH home
+        env:
+          DSH_HOME: ${{ runner.temp }}/dsh-home
+        run: node scripts/assert-isolated-home.mjs
+
+      - name: Package dry run
+        run: npm pack --dry-run
