@@ -4,8 +4,12 @@
   "description": "DSH bundle: Codex-style compaction strategy for DeepSeek Harness — swaps the trigger / split / retain / summarize / inject policy behind the ctx.compaction seam while keeping the official transaction contract and /compact.",
   "type": "module",
   "main": "lib/index.js",
+  "types": "./lib/types/index.d.ts",
   "exports": {
-    ".": "./lib/index.js",
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
