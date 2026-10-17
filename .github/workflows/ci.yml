@@ -69,3 +69,39 @@ jobs:
 
       - name: Package dry run
         run: npm pack --dry-run
+
+  # Assembly-level dump smoke (#2 / terminal-verification F5).
+  #
+  # SCOPE, so nobody merges the two smokes by accident:
+  #   * this job  = ASSEMBLY. A composed profile mounts our row, the official
+  #     compaction-basic row is disabled, ours is mounted, and the loader reports
+  #     no unresolved patch target. No session, no model credentials.
+  #   * scripts/smoke-runtime.mjs (#12/#39) = a REAL session through dsh@next, needs
+  #     credentials. That one lives in compat.yml and is non-gating.
+  #
+  # Unlike every other job in this file, this one deliberately performs a registry
+  # round trip, because the assembly smoke needs a real dsh binary. It is therefore
+  # best-effort: if the install fails, the script prints "SMOKE RESULT: SKIPPED"
+  # with the reason and exits 0, so a registry outage can never turn the gate red.
+  # For the same reason it is NOT in the required status checks.
+  dump-smoke:
+    name: ci / dump-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # Scoped package name on purpose: a bare `dsh` on npm is an unrelated
+      # package with no `next` tag (see the note in compat.yml).
+      - name: Install dsh and pnpm (best effort)
+        continue-on-error: true
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/dsh-next" @deepseek-ai/dsh@next
+          npm install --global pnpm
+
+      - name: Assembly smoke
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-next/bin/dsh
+        run: bash scripts/smoke-dumpconfig.sh
