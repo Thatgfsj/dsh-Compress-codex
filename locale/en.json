@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex-style compaction",
+    "description": "Replaces the DSH compaction policy behind ctx.compaction with a Codex-style one: three-stage trigger, structural retention, resumable summary fields."
+  }
+}
