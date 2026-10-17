@@ -104,15 +104,28 @@ dsh --profile <你的 profile> --dump-config | grep -B1 -A3 -E 'id: compaction-(
    `patch: entry "<id>" not found`；**这条警告只在 `--dump-config` 里出现**。
 2. **真实启动（离线）** —— `node scripts/smoke-runtime.mjs`：用临时 `DSH_HOME` 把本 bundle
    装进极小 profile，断言组合层、负控，**以及在真实启动的 dsh 进程内真的挂载成功**。
-3. **会话层** —— 尚不可用，见 §6。
+3. **会话层** —— `SMOKE_SESSION=1` 会在**真实模型**上跑两轮会话，断言完整的
+   `compaction/start → compaction/summary → user/message → compaction/end` 事务。已验证；
+   它**不**证明什么见 §6 与验证记录 §4.3。
 
 ```sh
-node scripts/smoke-runtime.mjs          # A1-A6；A7 在 M2 完成前 SKIP
-SMOKE_KEEP=1 node scripts/smoke-runtime.mjs   # 保留临时 home 以便排障
+node scripts/smoke-runtime.mjs                  # A1-A6；A7 未要求 → 退出码 2（INCOMPLETE）
+SMOKE_SESSION=1 node scripts/smoke-runtime.mjs  # 加上 A7（真实模型，需要凭据）
+SMOKE_KEEP=1 node scripts/smoke-runtime.mjs     # 保留临时 home 以便排障
 ```
 
-**skip 不是 pass**：缺少 `dsh`/`pnpm` 时脚本打印 `SMOKE RESULT: SKIPPED` 并退出 0
-（以免阻塞门禁），此时必须按"未验证"上报。
+**skip 不是 pass**，而且退出码会强制这一点：
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 所有断言都跑了且都通过——**完整**运行 |
+| `1` | 至少一条断言**失败** |
+| `2` | 跑过的都通过，但有断言被 **SKIP**（或前置条件缺失）⇒ 运行**不完整** |
+
+结论行同时用文字说明：`SMOKE RESULT: INCOMPLETE — PASS WITH 1 SKIPPED, NOT fully
+verified (A7)`，**不完整运行永远不会打印 0**。调用方若**有意**不要求某个 opt-in 断言，
+用 `SMOKE_ALLOW_SKIP=1` 声明这一范围（结论行照旧打印，只是退出码映射为 0）。
+`ci / compat-next` 没有模型凭据，因此必须传这个变量。
 
 ## 5. 四个坑
 
