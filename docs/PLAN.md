@@ -218,7 +218,7 @@ M2 的 #5 / #6 可并行（不同 owner、写入范围不重叠）；#7、#8 依
 | #8 D5 注入形态 | ⚠️ **未达成** | issue 仍 OPEN；相邻性与 `source.kind` 已由 `test/transaction-sequence.test.mjs` 断言，但"不给模型漏内部 id"无断言 |
 | #9 幂等与防漂移 | ✅ 完成 | `lib/core/idempotence.js` + 引擎 ledger/admit/antiDrift；`test/idempotence.test.mjs` |
 | #10 失败与降级 | ✅ 完成 | `lib/core/errors.js`；`test/errors.test.mjs`、`test/transaction-sequence.test.mjs` |
-| #11 测试矩阵 | ⚠️ **部分**：矩阵与反向用例齐备，但终验有 **2 条变异存活**（F1 屏障比例、F2 单元起点），证明这两类断言的判别力不足 | `test/invariants.test.mjs` 等；`docs/final-verification.md` §4 |
+| #11 测试矩阵 | ✅ 完成：终验的 2 条存活变异（F1 屏障比例、F2 单元起点）已由 #46 修复。**已在 rebase 后的 main 上独立复测这两条变异，均被抓住**：F1（`releasesEnough` 恒为 true）→ `test/select.test.mjs` 24 pass / 1 fail；F2（单元起点去掉平衡守卫）→ 全量 257 pass / 1 fail；未变异基线 258 / 0 | `test/select.test.mjs`、`test/invariants.test.mjs` |
 | #12 真实运行时冒烟 | ✅ 完成：装配层 + **会话级已在真实模型上验证通过** | `scripts/smoke-runtime.mjs` A1–A7；`runtime-verification.md` §3/§4 |
 | #13 可观测性 | ✅ **模块 + 接线已合**；边界：**报告行尚未在真实会话日志中被观察过** | `lib/core/telemetry.js` + 测试；`lib/engine.js` 已 import `buildCompactionReport/renderCompactionReport/reportLevel` |
 | #14 文档 | ✅ 完成 | README / README.zh / architecture / release / runtime-verification |
