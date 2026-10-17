@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex 风格压缩",
+    "description": "在 ctx.compaction 接缝上把 DSH 的压缩策略换成 Codex 风格：三段式触发、按对话结构保留、面向续跑的结构化摘要字段。"
+  }
+}
