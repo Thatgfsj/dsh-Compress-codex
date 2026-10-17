@@ -1,0 +1,28 @@
+# dsh-compress-codex — bundle layer (cordis patch).
+#
+# This file is the `dsh.bundle.patch` of this package: a cordis patch list that
+# the loader applies on top of every bundle listed *before* this one in the
+# profile's `dsh.profile.bundles`. It never runs standalone — the layer we patch
+# is owned by `dsh-base`, whose compaction section is documented in docs/PLAN.md §2.1.
+#
+# M0 (#1) ships the skeleton only. The row below mounts this package so the
+# bundle is real: it resolves, it shows up in `dsh --profile <p> --dump-config`,
+# and `dsh plugin remove` can take it back off. The host half (lib/index.js) is
+# a placeholder that registers nothing, so installing the bundle today leaves
+# the official compaction policy in charge — it is a no-op, not a half wire-up.
+#
+# M1-2 (#2) turns this into the actual seam replacement, per docs/PLAN.md §2.1:
+#
+#   - id: compaction-basic
+#     name: '@deepseek-ai/dsh-compaction-basic'
+#     disabled: true                        # drop the official policy
+#   - insert:
+#       - id: compaction-codex
+#         name: 'dsh-compress-codex'
+#
+# `command-compact` and `tool-result-pruner` stay untouched on purpose: they are
+# backend-independent, so /compact and oversized tool-output pruning keep working.
+- insert:
+    - id: compaction-codex
+      name: 'dsh-compress-codex'
+      config: {}

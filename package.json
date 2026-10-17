@@ -1,0 +1,59 @@
+{
+  "name": "dsh-compress-codex",
+  "version": "0.0.0",
+  "description": "DSH bundle: Codex-style compaction strategy for DeepSeek Harness — swaps the trigger / split / retain / summarize / inject policy behind the ctx.compaction seam while keeping the official transaction contract and /compact.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "guard": "node scripts/assert-isolated-home.mjs",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek-harness",
+    "compaction",
+    "context-compaction",
+    "codex"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Thatgfsj/dsh-Compress-codex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Thatgfsj/dsh-Compress-codex/issues"
+  },
+  "homepage": "https://github.com/Thatgfsj/dsh-Compress-codex#readme"
+}
