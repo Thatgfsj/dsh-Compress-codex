@@ -146,7 +146,8 @@ SMOKE_SESSION=1 node scripts/smoke-runtime.mjs
 ```
 
   （若 `~/.dsh/.credentials.yaml` 不存在，也可用 `SMOKE_SESSION=1 DEEPSEEK_API_KEY=...`；
-  两者都没有时 A7 打印 `SKIPPED` 并说明缺什么——**skip 不是 pass**。）
+  两者都没有时 A7 打印 `SKIPPED` 并说明缺什么，脚本以 **退出码 2（INCOMPLETE）** 结束——
+  **skip 不是 pass**，见 §6 的退出码契约。）
 
 ### 4.3 A7 **不**证明什么
 
@@ -245,16 +246,33 @@ node -e 'const s=JSON.parse(require("node:fs").readFileSync("/tmp/schema.json","
 ```sh
 git clone https://github.com/Thatgfsj/dsh-Compress-codex.git
 cd dsh-Compress-codex
-node scripts/smoke-runtime.mjs                 # A1-A6（A7 因未 opt-in 而 SKIP）
-SMOKE_SESSION=1 node scripts/smoke-runtime.mjs # 加上 A7：真实两轮会话 + 真实模型（需凭据）
+node scripts/smoke-runtime.mjs                 # A1-A6；A7 未要求 → 退出码 2（INCOMPLETE）
+SMOKE_SESSION=1 node scripts/smoke-runtime.mjs # 加上 A7：真实两轮会话 + 真实模型（需凭据）→ 退出码 0
 SMOKE_KEEP=1 node scripts/smoke-runtime.mjs    # 保留临时 DSH_HOME 以便排障
 ```
 
 环境变量：`DSH_BIN`（默认 `dsh`）、`SMOKE_PROFILE`（默认 `codexrtsmoke`）、
-`SMOKE_KEEP=1`、`SMOKE_SESSION=1`。
+`SMOKE_KEEP=1`、`SMOKE_SESSION=1`、`SMOKE_ALLOW_SKIP=1`。
 
-退出码：任一断言 FAIL → `1`；缺少 `dsh`/`pnpm` → 打印
-`SMOKE RESULT: SKIPPED` 并退出 `0`（**skip 不是 pass**，必须按未验证上报）。
+**退出码契约**（"skip 不是 pass"必须对机器也成立，不只是写在注释里）：
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 所有断言都跑了且都通过——**完整**运行，才能声称已验证 |
+| `1` | 至少一条断言**失败** |
+| `2` | 跑过的都通过，但有断言被 SKIP，或前置条件缺失（无 `dsh`/`pnpm`）⇒ **不完整** |
+
+结论行同时用文字说明，**裸 `PASS` 只出现在完整运行里**：
+
+```
+SMOKE RESULT: PASS (complete — no failing, no skipped assertions)        # exit 0
+SMOKE RESULT: INCOMPLETE — PASS WITH 1 SKIPPED, NOT fully verified (A7)  # exit 2
+SMOKE RESULT: FAIL (1 failing assertion(s))                              # exit 1
+```
+
+调用方若**有意**不要求某个 opt-in 断言，用 `SMOKE_ALLOW_SKIP=1` 声明该范围：结论行照旧，
+退出码映射为 `0`。`ci / compat-next` 没有模型凭据、永远跑不了 A7，因此**必须**带这个变量
+（否则该非门禁作业会以 2 结束，这正是新语义在起作用而不是故障）。
 
 ## 7. 版本区间与门禁关系
 

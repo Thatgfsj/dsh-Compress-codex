@@ -115,16 +115,30 @@ Three levels, cheapest first:
    `DSH_HOME`, installs this bundle into a minimal profile, and asserts composition,
    the negative control, **and that the real mount resolves the real base class inside a
    booting dsh process**.
-3. **Session level** — not yet available; see §6.
+3. **Session level** — `SMOKE_SESSION=1` drives a real two-turn session on a real
+   model and asserts the full `compaction/start → compaction/summary → user/message →
+   compaction/end` transaction. Verified; see §6 and §4.3 of the verification record
+   for what it does **not** prove.
 
 ```sh
-node scripts/smoke-runtime.mjs          # A1-A6; A7 SKIPPED until M2 lands
-SMOKE_KEEP=1 node scripts/smoke-runtime.mjs   # keep the temp home for debugging
+node scripts/smoke-runtime.mjs                  # A1-A6; A7 not requested -> exit 2 (INCOMPLETE)
+SMOKE_SESSION=1 node scripts/smoke-runtime.mjs  # + A7 on a real model (needs a credential)
+SMOKE_KEEP=1 node scripts/smoke-runtime.mjs     # keep the temp home for debugging
 ```
 
-A skip is **not** a pass: when `dsh` or `pnpm` is missing the script prints
-`SMOKE RESULT: SKIPPED` and exits 0 so it can never block the gate — report it as
-unverified.
+A skip is **not** a pass, and the exit code enforces it instead of merely asking:
+
+| exit | meaning |
+|---|---|
+| `0` | every assertion ran and passed — a **complete** run |
+| `1` | at least one assertion **failed** |
+| `2` | everything that ran passed, but something was **skipped** (or a prerequisite was missing) — the run is **INCOMPLETE** |
+
+The conclusion line says so in words as well — `SMOKE RESULT: INCOMPLETE — PASS WITH 1
+SKIPPED, NOT fully verified (A7)` — and `0` is never printed for a partial run. A caller
+that **deliberately** does not ask for an opt-in assertion declares that scope with
+`SMOKE_ALLOW_SKIP=1`, which maps an otherwise-clean incomplete run to `0` while printing
+the same line. `ci / compat-next` has no model credential, so it must pass that variable.
 
 ## 5. Four things that bite
 
