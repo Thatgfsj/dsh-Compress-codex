@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
@@ -8,8 +9,8 @@ import { fileURLToPath } from 'node:url'
 const guard = fileURLToPath(new URL('../scripts/assert-isolated-home.mjs', import.meta.url))
 
 /** Run the guard with a controlled DSH_HOME; `undefined` leaves it unset. */
-function runGuard(dshHome) {
-  const env = { ...process.env }
+function runGuard(dshHome, extraEnv = {}) {
+  const env = { ...process.env, ...extraEnv }
   if (dshHome === undefined) delete env.DSH_HOME
   else env.DSH_HOME = dshHome
   const result = spawnSync(process.execPath, [guard], { env, encoding: 'utf8' })
@@ -42,3 +43,34 @@ test('guard passes for a throwaway home under the platform temp root', () => {
   assert.equal(result.status, 0, `expected the guard to accept a temp home, got: ${result.stderr}`)
   assert.match(result.stdout, /guard\s*: ok/)
 })
+
+test(
+  'guard resolves DSH_HOME and the temp roots through the same resolver',
+  { skip: process.platform === 'win32' ? 'symlinks need elevation on Windows runners' : false },
+  () => {
+    // Reproduces the macOS shape (/var/folders -> /private/var/folders) on any
+    // POSIX host: TMPDIR is a symlink and DSH_HOME is a child of it. If only one
+    // side is realpath'ed, the containment check compares the resolved home
+    // against the unresolved root and refuses a legitimate throwaway home.
+    // A guard that false-rejects is a guard people learn to bypass.
+    const base = mkdtempSync(join(tmpdir(), 'dsh-guard-sym-'))
+    try {
+      const realRoot = join(base, 'real-root')
+      mkdirSync(realRoot, { recursive: true })
+      const linkRoot = join(base, 'link-root')
+      symlinkSync(realRoot, linkRoot)
+      const home = join(linkRoot, 'dsh')
+      mkdirSync(home, { recursive: true })
+
+      const result = runGuard(home, { TMPDIR: linkRoot, TMP: linkRoot, TEMP: linkRoot })
+      assert.equal(
+        result.status,
+        0,
+        `a symlinked temp root must still accept its own child home; stderr: ${result.stderr}`
+      )
+      assert.match(result.stdout, /guard\s*: ok/)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  }
+)
