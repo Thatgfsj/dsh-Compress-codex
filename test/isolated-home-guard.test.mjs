@@ -6,7 +6,6 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const guard = fileURLToPath(new URL('../scripts/assert-isolated-home.mjs', import.meta.url))
-const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 
 /** Run the guard with a controlled DSH_HOME; `undefined` leaves it unset. */
 function runGuard(dshHome) {
@@ -31,8 +30,10 @@ test('guard fails when DSH_HOME points at the real DSH home', () => {
 })
 
 test('guard fails when DSH_HOME is not under a temp root', () => {
-  const result = runGuard(join(repoRoot, '.tmp-home', 'dsh'))
-  assert.notEqual(result.status, 0, 'a repo-local home would pollute the checkout')
+  // Deliberately anchored at the user home rather than the checkout: a worktree
+  // under /tmp is itself inside a temp root, which would make this case vacuous.
+  const result = runGuard(join(homedir(), 'dsh-compress-codex-guard-probe', 'dsh'))
+  assert.notEqual(result.status, 0, 'a home outside the temp roots must be refused')
   assert.match(result.stderr, /must live under a temp directory/)
 })
 
