@@ -1,9 +1,11 @@
 # 真实运行时验证记录（M4-12 / #12）
 
 > **结论先行**：装配层（行替换是否生效 + 真实启动里是否真的挂上）**已验证**；
-> 会话层（真实会话触发一次压缩并观察 `compaction/start → compaction/summary →
-> user/message → compaction/end`）**未验证**，它要等 M2（#4/#5/#6）落地 + 一个可用的
-> 模型凭据。本文件逐条区分二者，不做任何"应该没问题"的推断。
+> **会话层也已在真实模型上验证**（2026-10-18）：一次真实两轮会话触发了完整事务
+> `compaction/start → compaction/summary → user/message → compaction/end`，摘要由
+> `deepseek-official/deepseek-flash` 真实产生。**仍未验证**的是展示元数据在 Web UI 里的
+> 渲染（只有断言，无截图，见 §9）与 `npm publish` 本身。
+> 本文件逐条区分，不做任何"应该没问题"的推断。
 >
 > 脚本：`scripts/smoke-runtime.mjs`（`node scripts/smoke-runtime.mjs`）
 > CI：`.github/workflows/compat.yml` 的 `ci / compat-next`（**非门禁**，`continue-on-error: true`）
@@ -30,10 +32,11 @@ infra 在 #2 已发现：**`web` 模板本身就禁用了 `compaction-basic`**�
 | OS | linux（脚本用 Node 编写，兼容 win/mac；`dsh`/`pnpm` 走 `shell: true`） |
 | pnpm | `12.11.2`（`dsh plugin add` 依赖） |
 | DSH_HOME | `os.tmpdir()/dsh-compress-codex-runtime-<pid>`，由 `scripts/assert-isolated-home.mjs` 守卫 |
+| 真实模型（仅 A7） | `deepseek-official/deepseek-flash`（一次性凭据豁免，见 §4.2） |
 
 ## 3. 已验证（本轮实测输出）
 
-`scripts/smoke-runtime.mjs` 实跑结果（2026-10-17，dsh 0.2.1-rc.2）：
+`scripts/smoke-runtime.mjs` 实跑结果（2026-10-18，dsh 0.2.1-rc.2；`SMOKE_SESSION=1` 下 A7 也参与）：
 
 ```
 SMOKE     : dsh = 0.2.1-rc.2
@@ -43,8 +46,9 @@ SMOKE OK  : A3 compaction-codex mounted from this package
 SMOKE OK  : A4 no unresolved patch target ("patch: entry ... not found")
 SMOKE OK  : A5 negative control: compaction-basic stays live without this bundle
 SMOKE OK  : A6 real boot: real base resolved, CodexCompactionEngine mounted, no load failure
-SMOKE SKIP: A7 session-level compaction needs the M2 policy (#4/#5/#6)...
-SMOKE SUMMARY: 6 ok, 0 failed, 1 skipped
+SMOKE OK  : A7 real session emitted compaction/start(21) -> compaction/summary(23) -> user/message(24) -> compaction/end(25)
+SMOKE     : A7 provider=deepseek-official model=deepseek-flash summaryChars=1749 shadowedRange={"start":8,"end":8}
+SMOKE SUMMARY: 7 ok, 0 failed, 0 skipped
 SMOKE RESULT: PASS
 ```
 
@@ -71,31 +75,85 @@ SMOKE RESULT: FAIL
 
 即：断言确实会红，且**disable 行是承重的**（见 §5.2）。
 
-## 4. 未验证（待 M2 完成，脚本已预留）
+## 4. 会话级压缩（A7）：**已在真实模型上验证**
 
-`A7` 是会话级断言，判据为：会话持久化文件里出现**有序子序列**
-`compaction/start → compaction/summary → user/message → compaction/end`。
+判据：会话持久化日志里出现**同一次压缩事务**的完整序列
+`compaction/start → compaction/summary → user/message → compaction/end`，且
+`compaction/summary` 的 `provider`/`model` 非空（证明摘要来自真实模型调用，不是空壳）。
 
-当前状态：**SKIPPED**，原因有两层，缺一不可：
+实测（2026-10-18，`dsh 0.2.1-rc.2`，真实 provider）：
 
-1. **M2 未落地**：`lib/engine.js` 仍是 #2 的骨架（决策钩子全部"delegate"，
-   `REFUSE` 拒绝手动范围选择与自定义摘要），`#4/#5/#6` 合并前不会走 Codex 策略；
-2. **无模型凭据**：本机 `dsh --profile hl "..."` 以
-   `dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"`
-   立即失败。
-
-M2 合并 + 拿到凭据后，用一条命令回填：
-
-```sh
-SMOKE_SESSION=1 DEEPSEEK_API_KEY=... node scripts/smoke-runtime.mjs
+```
+SMOKE OK  : A7 real session emitted compaction/start(21) -> compaction/summary(23) -> user/message(24) -> compaction/end(25)
+SMOKE     : A7 provider=deepseek-official model=deepseek-flash summaryChars=1749 shadowedRange={"start":8,"end":8}
+SMOKE SUMMARY: 7 ok, 0 failed, 0 skipped
+SMOKE RESULT: PASS
 ```
 
-脚本会自动：跑一次真实 headless 会话 → 在 `$DSH_HOME/sessions/**` 找最新的
-`session.v4.jsonl.zstd` → 用 `node:zlib.zstdDecompressSync` 解压 → 校验事件顺序。
-**未跑通前，任何"压缩端到端可用"的结论都不成立。**
+> `summaryChars` 随模型输出而变（同一脚本复跑会得到不同长度，例如 1749 / 403），
+> 但**事件序列与各字段恒同**——断言用的是结构与字段，不是长度或文本内容。
 
-> 注意：事件匹配用的是字面子串顺序，属于"最小可回填实现"；M2 落地时应把匹配器
-> 收紧到具体事件类型字段，并额外断言 `shadowedRange` 非空。
+从会话日志解出的原始事件（`seq` 连续、同一 `compactionId`）：
+
+| seq | 事件 | 关键字段 |
+|---|---|---|
+| 21 | `compaction/start` | `compactionId=6dd547d0-…`、`turn=2` |
+| 23 | `compaction/summary` | `summary=[{type:"text",…}]`、`provider="deepseek-official"`、`model="deepseek-flash"`、`maxTokens=65536`、`shadowedRange={start:8,end:8}`、`shadowedTokenCount=3529`、`usage.cacheReadTokens=8064` |
+| 24 | `user/message` | `source={kind:"compact-checkpoint",compactionId:…}`，内容含 `<compacted-summary>` |
+| 25 | `compaction/end` | 同一 `compactionId` |
+
+这一次运行同时印证了四条契约：C3（事务相邻性：`user/message` 紧邻
+`compaction/summary`）、C4（`cacheReadTokens=8064` 说明前缀缓存确实被复用）、
+C5（`summary` 是纯文本块）、D4/D5（摘要正文以 Codex 的 SUMMARY_PREFIX 开头，替换消息由
+基类框架包裹并携带检查点 source）。
+
+### 4.1 让 A7 "能通过"的两个设计要点（改之前它**永远**不可能通过）
+
+1. **必须强制压低阈值。** 默认触发是 `min(0.9 × W, triggerLimitTokens)`，而本机路由模型的
+   `W` 是百万级：一个 `say ok` 会话产生的几千 token 永远越不过阈值，A7 只会得到
+   "会话里没有 compression 事件"而 FAIL——**这不是凭据问题，是测试输入不足以触发被测行为**。
+   A7 的 overlay 因此设 `triggerLimitTokens: 2000`（绝对上限优先，正整数，满足 #3 的 schema）。
+2. **必须跑两轮，且只保留一个近期单元。** D2/D3 的保留单元是"以 `user/message` 起始的
+   C1 平衡单元"（`lib/core/select.js`），且**最新单元永远逐字保留**；单轮会话只有 1 个单元，
+   选择器会合法地返回 `null`（"nothing to shadow"）。所以 overlay 同时设
+   `retainRecentUnits: 1`，并在**同一个 session 上跑第二轮**（`--session-id <id>`）——
+   第二轮的前置检查（`agent/pre-step`）才是越过阈值并真正触发压缩的地方。
+
+> 环境事实（踩过的坑）：`headless` 模板**禁用了 `credentials` 行**
+> （`# == @deepseek-ai/dsh-base, patched by @deepseek-ai/dsh-headless`、`disabled: true`）。
+> 只把 `.credentials.yaml` 放进临时 home **不够**——`ctx.get("credentials")` 仍是 `undefined`，
+> 适配器于是只回退到进程环境变量并直接 `MISSING_CREDENTIAL`。A7 的 overlay 因此显式加
+> `- id: credentials / disabled: false`。
+
+### 4.2 凭据处理与一次性豁免记录（如实记录）
+
+- 用户**一次性授权** A7 使用真实凭据。方案取"**真实凭据 + 临时 DSH_HOME**"而非直接用真实
+  home：把 `~/.dsh/.credentials.yaml` **复制**进临时 home（`chmod 600`——该 provider 会拒绝
+  权限过宽的文档），对真实 home 全程只读。
+- **安全核验（跑完后实测）**：
+  - 真实 `~/.dsh/sessions/` 下**没有**任何以测试 cwd 为 slug 的会话目录（`--tmp-dsh-wt-a7--`）
+    ⇒ A7 没有把 session 写进真实 home；
+  - `~/.dsh/.credentials.yaml` 的 mtime 仍是 `2026-10-16`（未被改写）；
+  - 未创建或修改任何真实 profile 的既有内容。
+  - **一处如实记录的例外**：调研阶段我跑 `dsh --profile headless --help` 时**忘了设 `DSH_HOME`**，
+    加载器因此把真实 `~/.dsh/profiles/headless/cordis.yml` 重写为它标准的空根配置（内容 `[]`，
+    该目录 22:57 已存在）。无 session、无凭据、无用户 profile 内容受影响；此后所有命令都在
+    临时 `DSH_HOME` 下运行。
+- 复现：
+
+```sh
+SMOKE_SESSION=1 node scripts/smoke-runtime.mjs
+```
+
+  （若 `~/.dsh/.credentials.yaml` 不存在，也可用 `SMOKE_SESSION=1 DEEPSEEK_API_KEY=...`；
+  两者都没有时 A7 打印 `SKIPPED` 并说明缺什么——**skip 不是 pass**。）
+
+### 4.3 A7 **不**证明什么
+
+- **长会话质量**：只观测到一次压缩；多次压缩叠加与摘要漂移仍是 #9 的专项。
+- **默认阈值下的行为**：A7 是人为压低阈值强制触发，**默认 `0.9 × W` 下何时触发未被真实长会话验证**。
+- **跨工具调用的切割**：本次被遮蔽范围是单个 `user/message`（`shadowedRange={start:8,end:8}`），
+  没有覆盖"跨越 tool-call 的切割"；C1 配对的覆盖在 #11 的属性测试里，不在这里。
 
 ## 5. 四条实测出来的约束（写测试的人必须知道）
 
@@ -187,7 +245,8 @@ node -e 'const s=JSON.parse(require("node:fs").readFileSync("/tmp/schema.json","
 ```sh
 git clone https://github.com/Thatgfsj/dsh-Compress-codex.git
 cd dsh-Compress-codex
-node scripts/smoke-runtime.mjs                 # A1-A6；A7 在 M2 前 SKIP
+node scripts/smoke-runtime.mjs                 # A1-A6（A7 因未 opt-in 而 SKIP）
+SMOKE_SESSION=1 node scripts/smoke-runtime.mjs # 加上 A7：真实两轮会话 + 真实模型（需凭据）
 SMOKE_KEEP=1 node scripts/smoke-runtime.mjs    # 保留临时 DSH_HOME 以便排障
 ```
 
@@ -213,3 +272,17 @@ SMOKE_KEEP=1 node scripts/smoke-runtime.mjs    # 保留临时 DSH_HOME 以便排
 脚本在启动 `dsh` 之前先把 `DSH_HOME` 指向 `os.tmpdir()` 下的唯一目录，并运行
 `scripts/assert-isolated-home.mjs`；守卫不通过就 `SKIPPED` 退出，绝不落盘到
 真实 `~/.dsh`。临时目录在结束时删除（`SMOKE_KEEP=1` 除外）。
+
+A7（仅 `SMOKE_SESSION=1`）会**读取**真实 `~/.dsh/.credentials.yaml` 并复制进临时 home 后
+`chmod 600`；对真实 home 全程只读，凭据不会进入进程环境变量（除非你显式用
+`DEEPSEEK_API_KEY`）。核验方法与那一次例外见 §4.2。
+
+## 9. 展示元数据：断言已验证，界面未验证
+
+- **已验证（断言层）**：`scripts/verify-pack.mjs` 在**真实 `npm pack` 产物**上检查
+  `exports` 必须导出 `./package.json` 与 `./locale/*.json`、图标存在且在包内（realpath 后）
+  且 ≤256 KiB、`locale/*.json` 的 `meta.title`/`meta.description` 非空；并用 `--selftest`
+  注入 10 类故障证明这些检查**真的会红**（见 [发布文档](release.md) §1）。
+- **未验证（界面层）**：**没有**做过 Web UI 页面确认，也没有截图。因此"界面上真的显示了
+  标题与图标"仍属**未验证**。口径与 §3 的 `skip 不是 pass` 一致：断言能证明元数据
+  **可解析且完整**，不能证明**渲染正确**。

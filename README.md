@@ -173,20 +173,23 @@ dsh --profile <p> --patch <overlay.yml> </dev/null
 | Dimension | Codex target | State |
 |---|---|---|
 | D1 trigger | three-stage (`0.9` / `0.95` / turn-end / buffer) | **implemented** (#4) |
-| D2 split | structural units, C1-paired cuts | **in progress** (#5) — selector still returns `null` and delegates to the official selection (safe: it cannot split a pair or shadow node 0) |
-| D3 retention | recent structural units verbatim | **in progress** (#5) |
-| D4 summary | `codex-v1` template + projection | **template implemented** (#6); the cache-reusing call is #7 (not started) |
+| D2 split | structural units, C1-paired cuts | **implemented** (#5) |
+| D3 retention | recent structural units verbatim | **implemented** (#5) |
+| D4 summary | `codex-v1` template + projection | **implemented** (#6 template, #7 call) |
 | D5 injection | DSH framing (must not be re-invented) | constrained by the base transaction — by design |
 
-**Verified** ([`docs/runtime-verification.md`](docs/runtime-verification.md) §3): install into a
-minimal profile; `compaction-basic` disabled *and attributed*; `compaction-codex` mounted;
-no stale-override warning; negative control still live; real base resolved and
-`CodexCompactionEngine` constructed **inside a real boot**.
+**Verified** ([`docs/runtime-verification.md`](docs/runtime-verification.md)):
+- assembly + real boot (`§3`): install into a minimal profile; `compaction-basic` disabled
+  *and attributed*; `compaction-codex` mounted; no stale-override warning; negative control
+  still live; real base resolved and `CodexCompactionEngine` constructed **inside a real boot**;
+- **end-to-end on a real model** (`§4`): a real two-turn session emitted
+  `compaction/start(21) → compaction/summary(23) → user/message(24) → compaction/end(25)`,
+  with `provider=deepseek-official`, `model=deepseek-flash` and `cacheReadTokens=8064`.
 
-**Not verified**: a real session emitting
-`compaction/start → compaction/summary → user/message → compaction/end`.
-This needs M2 complete (#5, #7) plus a model credential. Do not read this project as
-"end-to-end compaction works" yet.
+**Not verified**: display metadata **as rendered in the Web UI** (asserted complete and
+resolvable by `scripts/verify-pack.mjs`, but no screenshot — §9), `npm publish` itself
+(no `NPM_TOKEN` in this repository), long-session quality under repeated compaction (#9),
+and the default `0.9 × W` threshold on a genuinely long conversation (§4.3).
 
 ## 7. Rollback
 

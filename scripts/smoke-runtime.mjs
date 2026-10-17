@@ -16,9 +16,11 @@
  *   A6  real boot: inside a booting dsh process, this package's `mountEngine()`
  *       resolves the real `@deepseek-ai/dsh-compaction-basic` and constructs
  *       CodexCompactionEngine; no "cannot load" line is emitted
- *   A7  (M2-gated) a real session emits compaction/start -> compaction/summary ->
- *       user/message -> compaction/end.  SKIPPED until #4/#5/#6 land and a model
- *       credential is available; see docs/runtime-verification.md.
+ *   A7  a real multi-turn model session emits compaction/start ->
+ *       compaction/summary -> user/message -> compaction/end, with a non-empty
+ *       provider/model on the summary.  Opt-in via SMOKE_SESSION=1: the M2 policy
+ *       has landed, so the only blocker is a model credential, and this run
+ *       drives a real provider; see docs/runtime-verification.md §4.
  *
  * Why the profile must come from `dsh plugin add` and not a shipped template:
  * the `web` template disables compaction-basic on its own (owned by
@@ -34,9 +36,9 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zstdDecompressSync } from 'node:zlib'
 
@@ -57,7 +59,9 @@ function run(bin, args, options = {}) {
   const result = spawnSync(bin, args, {
     encoding: 'utf8',
     shell: WIN,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // stdin stays open when a caller pipes a task in (A7's long first turn).
+    stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    input: options.input,
     timeout: options.timeout ?? 180_000,
     cwd: options.cwd ?? REPO_ROOT,
     env: process.env
@@ -178,39 +182,172 @@ try {
     ok('A6 real boot: real base resolved, CodexCompactionEngine mounted, no load failure')
   }
 
-  // ------------------------------------------- A7 session-level (M2-gated)
+  // ------------------------------- A7 session-level (opt-in, real provider)
   const session = sessionAssertion()
   if (session.status === 'SKIPPED') skip('A7 ' + session.reason)
-  else if (session.status === 'OK') ok('A7 session emitted ' + session.sequence)
-  else fail('A7 ' + session.reason)
+  else if (session.status === 'OK') {
+    ok('A7 real session emitted ' + session.sequence)
+    console.log('SMOKE     : A7 ' + session.detail)
+  } else fail('A7 ' + session.reason)
 } catch (error) {
   fail('unexpected smoke error: ' + (error instanceof Error ? error.message : String(error)))
 } finally {
   cleanup()
 }
 
+/**
+ * A7 — drive a real multi-turn session until the compaction policy fires.
+ *
+ * Two design points that make this test *able* to pass, both learned the hard way:
+ *
+ *  1. The shipped `headless` template disables the `credentials` row
+ *     (`patched by @deepseek-ai/dsh-headless`), so a seeded store alone is not
+ *     enough — the A7 overlay re-enables the row so `ctx.get("credentials")`
+ *     exists and the file-backed provider is consulted.
+ *  2. The default trigger is 90% of the routed model's window (~1M tokens here),
+ *     which no short conversation reaches. A "say ok" session therefore fails for
+ *     lack of input, not for lack of correctness. The overlay forces an absolute
+ *     `triggerLimitTokens: 2000` and keeps a single recent unit, and turn 2 is
+ *     what crosses it (turn 1 alone is one structural unit and the newest unit is
+ *     always retained, so it legitimately compacts nothing).
+ */
 function sessionAssertion() {
   if (process.env.SMOKE_SESSION !== '1') {
-    return { status: 'SKIPPED', reason: 'session-level compaction needs the M2 policy (#4/#5/#6). Re-enable with SMOKE_SESSION=1 once M2 is merged and a model credential is present' }
+    return { status: 'SKIPPED', reason: 'A7 drives a real multi-turn model session and is opt-in; the M2 policy has landed, so the only blocker is a credential. Re-run with SMOKE_SESSION=1 (see docs/runtime-verification.md §4)' }
   }
-  if (!process.env.DEEPSEEK_API_KEY) return { status: 'SKIPPED', reason: 'SMOKE_SESSION=1 but DEEPSEEK_API_KEY is unset' }
-  const boot = dsh(['--profile', PROFILE, 'say ok'], { timeout: 300_000 })
-  const combined = boot.out + boot.err
-  if (/MISSING_CREDENTIAL|no API key/.test(combined)) return { status: 'SKIPPED', reason: 'no usable credential for the routed model' }
+
+  // Credential: seed the throwaway home from the real store (the real home is
+  // only ever READ). Everything else happens inside the temp home.
+  const store = join(home, '.credentials.yaml')
+  if (!existsSync(store) && process.env.DEEPSEEK_API_KEY === undefined) {
+    const realStore = join(homedir(), '.dsh', '.credentials.yaml')
+    if (!existsSync(realStore)) {
+      return { status: 'SKIPPED', reason: 'no credential available: neither DEEPSEEK_API_KEY nor ' + realStore }
+    }
+    copyFileSync(realStore, store)
+    chmodSync(store, 0o600) // the provider refuses a document readable beyond its owner
+  }
+
+  const profile = PROFILE + '-session'
+  dsh(['--profile', profile, '--from-default-profile', 'headless', '--dump-config'])
+  dsh(['plugin', '--profile', profile, 'add', REPO_ROOT])
+
+  const overlay = join(home, 'a7-overlay.yml')
+  writeFileSync(overlay, [
+    '- id: credentials',
+    '  disabled: false',
+    '- id: compaction-codex',
+    '  config:',
+    '    triggerLimitTokens: 2000',
+    '    retainRecentUnits: 1',
+    ''
+  ].join('\n'))
+
+  const sentence = 'The DSH compaction seam summarises the oldest balanced span while keeping a recent tail verbatim. '
+  let prompt = 'Read the reference text and reply with exactly the single word ACK.\n\n'
+  while (prompt.length < 14_000) prompt += sentence
+
+  const first = dsh(['--profile', profile, '--patch', overlay, '-'], { timeout: 300_000, input: prompt })
+  if (first.code !== 0) return { status: 'FAIL', reason: 'turn 1 failed (exit ' + first.code + '): ' + brief(first.err || first.out) }
+  const sessionDir = newestSessionDir(home)
+  if (sessionDir === null) return { status: 'FAIL', reason: 'turn 1 wrote no session directory under $DSH_HOME/sessions' }
+
+  const second = dsh(['--profile', profile, '--patch', overlay, '--session-id', basename(sessionDir), 'reply with the single word DONE'], { timeout: 300_000 })
+  if (second.code !== 0) return { status: 'FAIL', reason: 'turn 2 failed (exit ' + second.code + '): ' + brief(second.err || second.out) }
+
   const sessionFile = newestSessionFile(home)
-  if (!sessionFile) return { status: 'FAIL', reason: 'no session file was written under $DSH_HOME/sessions' }
-  const text = decompress(sessionFile)
-  // Ordered subsequence over the durable event types recorded by dsh-compaction.
-  const wanted = ['compaction/start', 'compaction/summary', 'user/message', 'compaction/end']
-  let cursor = 0
-  const seen = []
-  for (const needle of wanted) {
-    const at = text.indexOf(needle, cursor)
-    if (at === -1) return { status: 'FAIL', reason: 'session did not emit ' + wanted.join(' -> ') + ' in order; missing "' + needle + '" after offset ' + cursor }
-    seen.push(needle)
-    cursor = at + needle.length
+  if (sessionFile === null) return { status: 'FAIL', reason: 'no session file under $DSH_HOME/sessions' }
+  const events = decodeSessionEvents(sessionFile)
+  if (events === null) return { status: 'FAIL', reason: 'the session log did not decode into events: ' + sessionFile }
+
+  const start = events.find((event) => event.type === 'compaction/start')
+  if (start === undefined) {
+    return { status: 'FAIL', reason: 'the session emitted no compaction/start — triggerLimitTokens=2000 was never crossed (routed model: ' + sessionFile + ')' }
   }
-  return { status: 'OK', sequence: seen.join(' -> ') }
+  const id = start.data === undefined ? undefined : start.data.compactionId
+  const summary = events.find((event) => event.type === 'compaction/summary' && event.data !== undefined && event.data.compactionId === id)
+  if (summary === undefined) return { status: 'FAIL', reason: 'compaction/start ' + String(id) + ' has no matching compaction/summary' }
+  const end = events.find((event) => event.type === 'compaction/end' && event.data !== undefined && event.data.compactionId === id)
+  if (end === undefined) return { status: 'FAIL', reason: 'compaction/start ' + String(id) + ' was never closed by compaction/end' }
+  if (!(start.seq < summary.seq && summary.seq < end.seq)) {
+    return { status: 'FAIL', reason: 'the transaction is out of order: start=' + start.seq + ' summary=' + summary.seq + ' end=' + end.seq }
+  }
+
+  const replacement = events.find((event) => event.type === 'user/message' && event.seq === summary.seq + 1)
+  if (replacement === undefined) return { status: 'FAIL', reason: 'no user/message immediately after compaction/summary seq ' + summary.seq + ' (C3 adjacency)' }
+  if (!JSON.stringify(replacement.data === undefined ? {} : replacement.data).includes('<compacted-summary>')) {
+    return { status: 'FAIL', reason: 'the replacement user/message is not framed as <compacted-summary>' }
+  }
+
+  const provider = summary.data.provider
+  const model = summary.data.model
+  if (typeof provider !== 'string' || provider.length === 0) return { status: 'FAIL', reason: 'compaction/summary carries an empty provider (the summary is not a real model call)' }
+  if (typeof model !== 'string' || model.length === 0) return { status: 'FAIL', reason: 'compaction/summary carries an empty model' }
+  const summaryText = (Array.isArray(summary.data.summary) ? summary.data.summary : [])
+    .map((block) => (block === null || typeof block !== 'object' ? '' : String(block.text ?? '')))
+    .join('')
+  if (summaryText.trim().length === 0) return { status: 'FAIL', reason: 'compaction/summary carries no text' }
+
+  return {
+    status: 'OK',
+    sequence: 'compaction/start(' + start.seq + ') -> compaction/summary(' + summary.seq + ') -> user/message(' + replacement.seq + ') -> compaction/end(' + end.seq + ')',
+    detail: 'provider=' + provider + ' model=' + model + ' summaryChars=' + summaryText.length +
+      ' shadowedRange=' + JSON.stringify(summary.data.shadowedRange === undefined ? null : summary.data.shadowedRange)
+  }
+}
+
+/** First 300 characters of a command's diagnostic output, for a FAIL reason. */
+function brief(text) {
+  return String(text).trim().slice(0, 300)
+}
+
+/** Newest `session-*` directory under `$DSH_HOME/sessions`. */
+function newestSessionDir(root) {
+  const sessionsRoot = join(root, 'sessions')
+  if (!existsSync(sessionsRoot)) return null
+  const dirs = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const full = join(dir, entry.name)
+      if (entry.name.startsWith('session-')) dirs.push(full)
+      walk(full)
+    }
+  }
+  walk(sessionsRoot)
+  dirs.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  return dirs[0] ?? null
+}
+
+/**
+ * Decode a session log into its events.
+ *
+ * `session.v4.jsonl.zstd` is a CONCATENATED multi-frame stream (one frame per
+ * append), and `zstdDecompressSync` over the whole file decodes only the FIRST
+ * frame — in practice 169 bytes of session header out of a 19 KB log, which looks
+ * exactly like "no events were recorded". Scan for the frame magic and decode each
+ * frame separately: a magic sequence occurring inside compressed payload fails to
+ * decode and is skipped. Returns null when nothing decoded, so the caller reports
+ * a decode failure instead of a false negative.
+ */
+function decodeSessionEvents(file) {
+  const bytes = readFileSync(file)
+  let text = bytes.toString('utf8')
+  if (file.endsWith('.zstd')) {
+    const magic = [0x28, 0xb5, 0x2f, 0xfd]
+    const parts = []
+    for (let i = 0; i <= bytes.length - 4; i += 1) {
+      if (bytes[i] !== magic[0] || bytes[i + 1] !== magic[1] || bytes[i + 2] !== magic[2] || bytes[i + 3] !== magic[3]) continue
+      try { parts.push(zstdDecompressSync(bytes.subarray(i)).toString('utf8')) } catch { /* not a frame start */ }
+    }
+    text = parts.join('')
+  }
+  const events = []
+  for (const line of text.split('\n')) {
+    if (line.trim().length === 0) continue
+    try { events.push(JSON.parse(line)) } catch { /* torn or foreign line */ }
+  }
+  return events.length === 0 ? null : events
 }
 
 function newestSessionFile(root) {
@@ -227,14 +364,6 @@ function newestSessionFile(root) {
   walk(sessionsRoot)
   found.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
   return found[0] ?? null
-}
-
-function decompress(file) {
-  const bytes = readFileSync(file)
-  if (file.endsWith('.zstd')) {
-    try { return zstdDecompressSync(bytes).toString('utf8') } catch { return '' }
-  }
-  return bytes.toString('utf8')
 }
 
 // ------------------------------------------------------------------- verdict

@@ -160,18 +160,22 @@ dsh --profile <p> --patch <overlay.yml> </dev/null
 | 维度 | Codex 目标 | 状态 |
 |---|---|---|
 | D1 触发 | 三段式（`0.9` / `0.95` / 轮末 / buffer） | **已实现**（#4） |
-| D2 切分 | 结构单元、C1 配对切割 | **进行中**（#5）——选择器目前返回 `null` 并交回官方选择（安全：它不可能切半对，也不会遮蔽节点 0） |
-| D3 保留 | 最近结构单元逐字保留 | **进行中**（#5） |
-| D4 摘要 | `codex-v1` 模板 + 输出投影 | **模板已实现**（#6）；缓存友好调用是 #7（未开始） |
+| D2 切分 | 结构单元、C1 配对切割 | **已实现**（#5） |
+| D3 保留 | 最近结构单元逐字保留 | **已实现**（#5） |
+| D4 摘要 | `codex-v1` 模板 + 输出投影 | **已实现**（#6 模板、#7 调用） |
 | D5 注入 | DSH 既有框架（不应自行发明） | 受基类事务约束——这是设计使然 |
 
-**已验证**（[`docs/runtime-verification.md`](docs/runtime-verification.md) §3）：装进极小 profile；
-`compaction-basic` 被禁用**且归因到本 bundle**；`compaction-codex` 已挂载；无陈旧 override 警告；
-负控仍然启用；**真实启动内**解析出真基类并构造出 `CodexCompactionEngine`。
+**已验证**（[`docs/runtime-verification.md`](docs/runtime-verification.md)）：
+- 装配 + 真实启动（§3）：装进极小 profile；`compaction-basic` 被禁用**且归因到本 bundle**；
+  `compaction-codex` 已挂载；无陈旧 override 警告；负控仍然启用；**真实启动内**解析出真基类
+  并构造出 `CodexCompactionEngine`；
+- **真实模型上的端到端**（§4）：真实两轮会话产生
+  `compaction/start(21) → compaction/summary(23) → user/message(24) → compaction/end(25)`，
+  且 `provider=deepseek-official`、`model=deepseek-flash`、`cacheReadTokens=8064`。
 
-**未验证**：真实会话产生
-`compaction/start → compaction/summary → user/message → compaction/end`。
-它需要 M2 完成（#5、#7）以及一个可用的模型凭据。**现在还不能把本项目读成"端到端压缩可用"。**
+**未验证**：展示元数据在 **Web UI 中的实际渲染**（`scripts/verify-pack.mjs` 已断言其可解析且完整，
+但**没有截图**，见 §9）；`npm publish` 本身（本仓库无 `NPM_TOKEN`）；多次压缩叠加下的长会话质量（#9）；
+以及**默认 `0.9 × W` 阈值**在真实长会话中的触发时机（§4.3）。
 
 ## 7. 回滚
 
