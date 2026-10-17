@@ -99,11 +99,19 @@ pi: H -> H'      |H'| << |H|      subject to  TaskSuccess(H') ~= TaskSuccess(H)
 
 **推荐 B**，理由是第一性原则的取舍：*保留被验证过的机械不变量，只替换信息论决策*。若审阅要求"完全不依赖官方 basic 实现"，则退 A，需相应延长里程碑。
 
-### 2.3 关键未知（已在验证中，随审阅一并汇报）
+### 2.3 关键未知 —— 已核实（源码级证据）
 
-- 覆盖 `compactIfNeeded` 后，原生的**溢出恢复** listener（`agent/request-error` / `CONTEXT_WINDOW_EXCEEDED`）是否仍生效，或随 `disabled: true` 一起丢失 → 决定我们是否要自建该 listener。
-- `compactRegion` 可复用性与其 `this` 依赖清单。
-- `summarize()` 的 `SummarizationInput` 精确字段。
+| 问题 | 结论 | 证据 |
+|---|---|---|
+| 覆盖 `compactIfNeeded` 后是否被调用 | **是**。自动路径两处都是 `this.compactIfNeeded(...)` 动态分派 | `dsh-compaction-basic/lib/index.js` L839 `ctx.on("agent/pre-step")` → L841；L861 `ctx.on("agent/request-error")` → L872。源码注释原文：`compactIfNeeded` stays dynamically dispatched so subclass overrides are honored at event time |
+| disable 原生行会丢失溢出恢复吗 | **不会**。两个 listener 由**实例自己的构造函数**注册（L827 `if (this.config.auto) this._registerAutomaticCompaction()`）。我们实例化自己的子类，listener 照旧注册，决策走我们的 override | 同上 L827 / L834 |
+| `compactRegion` 可复用性 | **可复用**（public），内部走 `compactSurfaceRegion(regionDependencies(), ...)` | `compactRegion` 实现 + `regionDependencies()` 提供 `{meter, summarize, recover}` |
+| 内部切分函数能否复用 | **不能**。`selectCompactableRange`（L410）未导出，唯一导出是 `BasicCompactionEngine`（L1027） | 故 D2/D3 必须自研（议题 #5） |
+| 核心包可用的公开工具 | `CompactionEngine, CompactionId, ManualCompactionError, compactCheckpointSource, isCompactCheckpointSource, toolPairingBalancedBefore/After` | `dsh-compaction/lib/index.js` L175 |
+
+**结论：方案 B 可行性已证实**，且比预想更稳：继承既有引擎 = 同时继承其自动触发注册、溢出恢复、事务内核与锁语义，我们只替换**决策函数**。
+
+**新识别的实现风险**：官方自动路径对其 turn 归属与稳定性有更严的校验，而 `compactRegion` 的封装参数固定；override 后直接转调是否仍满足校验，列为议题 #4 的验收项。
 
 ---
 
@@ -195,7 +203,7 @@ M2 的 #5 / #6 可并行（不同 owner、写入范围不重叠）；#7、#8 依
 
 ## 7. 待审阅决策点（请 owner 逐条批复）
 
-- **Q1 架构**：选 A（全自研）/ **B（策略层继承，推荐）**？
+- **Q1 架构**：选 A（全自研）/ **B（策略层继承，推荐，§2.3 已证实可行）**？ ← 无异议则默认按 B 执行
 - **Q2 兼容基线**：是否要求同时支持 `dsh 0.2.0-rc.2`，还是只锁 `0.2.1-rc.2` 并声明 `engines.dsh`？
 - **Q3 配置默认**：默认沿用官方写法（比例）还是改为 Codex 的绝对阈值 + 结构化保留？
 - **Q4 交付形态**：只发 npm 包，还是要一并产出"一键替换 profile"的安装脚本？
