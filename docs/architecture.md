@@ -19,8 +19,9 @@
 │     策略键（POLICY_KEYS）切分，避免触发官方校验器               │
 ├──────────────────────────────────────────────────────────────┤
 │ lib/core/**       纯决策层：不 import 任何 '@deepseek-ai/*'      │
-│   trigger.js(D1,#4 已实现) select.js(D2/D3,#5 骨架)           │
-│   prompt.js(D4,#6 已实现)  config.js / keys.js(策略面)          │
+│   trigger.js(D1) select.js(D2/D3) prompt.js(D4) summarize.js(#7)│
+│   idempotence.js(#9) errors.js(#10) telemetry.js(#13 模块层)     │
+│   config.js / keys.js（策略面）                                  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,9 +94,9 @@ agent/request-error (CONTEXT_WINDOW_EXCEEDED)
 |---|---|---|---|
 | **D1 触发** | 单一比例：`floor(min(W×thresholdRatio, W−O−headroomTokens))`，`thresholdRatio=0.8`、`headroom=65536` | **三段式**：`full = floor(W×0.95)`；`limit = min(triggerLimitTokens ?? ∞, floor(W×0.9))`；触发 = `scope≥limit+buffer \|\| active≥full`；另有独立轮末百分比（默认 0=关） | 已实现 #4 |
 | **D1 溢出** | `agent/request-error` → 旁路阈值，一次最大平衡头部缩减 | 相同语义（`overflowRecovery: true`），由引擎转成 `context-overflow` 触发 | 已实现 #4 |
-| **D2 切分** | 最旧的**平衡范围**，起点跳过 `system/message` | 结构单元划分 + C1 双端吸附；找不到安全 cut 则**零写入** | 进行中 #5 |
-| **D3 保留** | `retainRatio = 0.16` × `W − O` 逐字保留 | 按**结构单元**保留（`retainRecentUnits` 默认 3）；`retainTokens` 是**软**上限，整单元进/出 | 进行中 #5 |
-| **D4 摘要** | 自由文本；单轮 `ctx.llm.stream({purpose:'compaction'})`，回放 system+tools+被遮蔽区域 | `codex-v1` 结构化模板：Codex 四条 bullet + `files`/`pitfalls` 两扩展字段；投影只取文本 | 模板 #6；调用 #7 未开始 |
+| **D2 切分** | 最旧的**平衡范围**，起点跳过 `system/message` | 结构单元划分 + C1 双端吸附；找不到安全 cut 则**零写入** | 已实现 #5 |
+| **D3 保留** | `retainRatio = 0.16` × `W − O` 逐字保留 | 按**结构单元**保留（`retainRecentUnits` 默认 3）；`retainTokens` 是**软**上限，整单元进/出 | 已实现 #5 |
+| **D4 摘要** | 自由文本；单轮 `ctx.llm.stream({purpose:'compaction'})`，回放 system+tools+被遮蔽区域 | `codex-v1` 结构化模板：Codex 四条 bullet + `files`/`pitfalls` 两扩展字段；投影只取文本 | 已实现 #6 模板 / #7 调用 |
 | **D5 注入** | 一条带 `<compacted-summary>` 框定与 `compactCheckpointSource` 的替换 `user/message` | **不改**（外层框架由基类事务生成，改它就等于放弃 C3 复用） | 受约束，非未完成 |
 
 **"要不要换"的一句话**：如果你只需要"到阈值就总结历史"，官方后端够用且更便宜；
@@ -109,8 +110,13 @@ agent/request-error (CONTEXT_WINDOW_EXCEEDED)
    见 [`docs/runtime-verification.md`](runtime-verification.md) §5.1。
 2. **`web` 模板假绿**：该模板自身禁用 `compaction-basic`，别用它验证本 bundle。
    见 [`docs/runtime-verification.md`](runtime-verification.md) §1。
-3. **会话级未验证**：`compaction/start → summary → user/message → end` 尚未在真实会话中观察到，
-   需要 #5/#7 完成 + 模型凭据。
+3. **会话级已实测通过，但有边界**：真实两轮会话已在真实模型上产生
+   `compaction/start → summary → user/message → end`（见
+   [`docs/runtime-verification.md`](runtime-verification.md) §4）。它**不**证明长会话质量、
+   **默认 `0.9 × W` 阈值**下的触发时机、或跨 tool-call 的切割——边界逐条列在 §4.3。
+   仍未闭合的是 **#8**（D5 注入形态"不给模型漏内部 id"没有断言）；**#13** 的模块与接线都已合
+   （`lib/engine.js` 已 import `lib/core/telemetry.js`），但**它的报告行尚未在真实会话日志中被
+   观察过**，这条边界仍然成立。
 4. **防漂移是 DSH 自研**：Codex 侧**没有任何**显式防漂移机制（只有"每次重新总结" + 一句警告），
    所以 #9 的版本号/稳定标记必须自己定义，不能声称照搬。
    见 [`docs/codex-notes.md`](codex-notes.md) §6.2 与 [`docs/codex-dsh-mapping.md`](codex-dsh-mapping.md) §3。

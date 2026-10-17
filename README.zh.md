@@ -104,15 +104,28 @@ dsh --profile <你的 profile> --dump-config | grep -B1 -A3 -E 'id: compaction-(
    `patch: entry "<id>" not found`；**这条警告只在 `--dump-config` 里出现**。
 2. **真实启动（离线）** —— `node scripts/smoke-runtime.mjs`：用临时 `DSH_HOME` 把本 bundle
    装进极小 profile，断言组合层、负控，**以及在真实启动的 dsh 进程内真的挂载成功**。
-3. **会话层** —— 尚不可用，见 §6。
+3. **会话层** —— `SMOKE_SESSION=1` 会在**真实模型**上跑两轮会话，断言完整的
+   `compaction/start → compaction/summary → user/message → compaction/end` 事务。已验证；
+   它**不**证明什么见 §6 与验证记录 §4.3。
 
 ```sh
-node scripts/smoke-runtime.mjs          # A1-A6；A7 在 M2 完成前 SKIP
-SMOKE_KEEP=1 node scripts/smoke-runtime.mjs   # 保留临时 home 以便排障
+node scripts/smoke-runtime.mjs                  # A1-A6；A7 未要求 → 退出码 2（INCOMPLETE）
+SMOKE_SESSION=1 node scripts/smoke-runtime.mjs  # 加上 A7（真实模型，需要凭据）
+SMOKE_KEEP=1 node scripts/smoke-runtime.mjs     # 保留临时 home 以便排障
 ```
 
-**skip 不是 pass**：缺少 `dsh`/`pnpm` 时脚本打印 `SMOKE RESULT: SKIPPED` 并退出 0
-（以免阻塞门禁），此时必须按"未验证"上报。
+**skip 不是 pass**，而且退出码会强制这一点：
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 所有断言都跑了且都通过——**完整**运行 |
+| `1` | 至少一条断言**失败** |
+| `2` | 跑过的都通过，但有断言被 **SKIP**（或前置条件缺失）⇒ 运行**不完整** |
+
+结论行同时用文字说明：`SMOKE RESULT: INCOMPLETE — PASS WITH 1 SKIPPED, NOT fully
+verified (A7)`，**不完整运行永远不会打印 0**。调用方若**有意**不要求某个 opt-in 断言，
+用 `SMOKE_ALLOW_SKIP=1` 声明这一范围（结论行照旧打印，只是退出码映射为 0）。
+`ci / compat-next` 没有模型凭据，因此必须传这个变量。
 
 ## 5. 四个坑
 
@@ -160,18 +173,22 @@ dsh --profile <p> --patch <overlay.yml> </dev/null
 | 维度 | Codex 目标 | 状态 |
 |---|---|---|
 | D1 触发 | 三段式（`0.9` / `0.95` / 轮末 / buffer） | **已实现**（#4） |
-| D2 切分 | 结构单元、C1 配对切割 | **进行中**（#5）——选择器目前返回 `null` 并交回官方选择（安全：它不可能切半对，也不会遮蔽节点 0） |
-| D3 保留 | 最近结构单元逐字保留 | **进行中**（#5） |
-| D4 摘要 | `codex-v1` 模板 + 输出投影 | **模板已实现**（#6）；缓存友好调用是 #7（未开始） |
+| D2 切分 | 结构单元、C1 配对切割 | **已实现**（#5） |
+| D3 保留 | 最近结构单元逐字保留 | **已实现**（#5） |
+| D4 摘要 | `codex-v1` 模板 + 输出投影 | **已实现**（#6 模板、#7 调用） |
 | D5 注入 | DSH 既有框架（不应自行发明） | 受基类事务约束——这是设计使然 |
 
-**已验证**（[`docs/runtime-verification.md`](docs/runtime-verification.md) §3）：装进极小 profile；
-`compaction-basic` 被禁用**且归因到本 bundle**；`compaction-codex` 已挂载；无陈旧 override 警告；
-负控仍然启用；**真实启动内**解析出真基类并构造出 `CodexCompactionEngine`。
+**已验证**（[`docs/runtime-verification.md`](docs/runtime-verification.md)）：
+- 装配 + 真实启动（§3）：装进极小 profile；`compaction-basic` 被禁用**且归因到本 bundle**；
+  `compaction-codex` 已挂载；无陈旧 override 警告；负控仍然启用；**真实启动内**解析出真基类
+  并构造出 `CodexCompactionEngine`；
+- **真实模型上的端到端**（§4）：真实两轮会话产生
+  `compaction/start(21) → compaction/summary(23) → user/message(24) → compaction/end(25)`，
+  且 `provider=deepseek-official`、`model=deepseek-flash`、`cacheReadTokens=8064`。
 
-**未验证**：真实会话产生
-`compaction/start → compaction/summary → user/message → compaction/end`。
-它需要 M2 完成（#5、#7）以及一个可用的模型凭据。**现在还不能把本项目读成"端到端压缩可用"。**
+**未验证**：展示元数据在 **Web UI 中的实际渲染**（`scripts/verify-pack.mjs` 已断言其可解析且完整，
+但**没有截图**，见 §9）；`npm publish` 本身（本仓库无 `NPM_TOKEN`）；多次压缩叠加下的长会话质量（#9）；
+以及**默认 `0.9 × W` 阈值**在真实长会话中的触发时机（§4.3）。
 
 ## 7. 回滚
 

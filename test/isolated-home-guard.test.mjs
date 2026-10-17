@@ -44,33 +44,45 @@ test('guard passes for a throwaway home under the platform temp root', () => {
   assert.match(result.stdout, /guard\s*: ok/)
 })
 
-test(
-  'guard resolves DSH_HOME and the temp roots through the same resolver',
-  { skip: process.platform === 'win32' ? 'symlinks need elevation on Windows runners' : false },
-  () => {
-    // Reproduces the macOS shape (/var/folders -> /private/var/folders) on any
-    // POSIX host: TMPDIR is a symlink and DSH_HOME is a child of it. If only one
-    // side is realpath'ed, the containment check compares the resolved home
-    // against the unresolved root and refuses a legitimate throwaway home.
-    // A guard that false-rejects is a guard people learn to bypass.
-    const base = mkdtempSync(join(tmpdir(), 'dsh-guard-sym-'))
+test('guard resolves DSH_HOME and the temp roots through the same resolver', (t) => {
+  // Reproduces the macOS shape (/var/folders -> /private/var/folders) on any host:
+  // the temp root is a link and DSH_HOME is a child of it. If only one side is
+  // realpath'ed, the containment check compares a resolved home against an
+  // unresolved root and refuses a legitimate throwaway home. A guard that
+  // false-rejects is a guard people learn to bypass.
+  //
+  // Windows (terminal-verification F7): `mklink /D` needs elevation, so a symbolic
+  // link is not available on a stock runner — but a *directory junction* is
+  // created without elevation and resolves through the same
+  // GetFinalPathNameByHandle path, so it reproduces the same two-spellings shape.
+  // We therefore attempt the junction instead of skipping Windows outright, and
+  // only skip when even that is refused; the residual gap is recorded in
+  // docs/final-verification.md (F7).
+  const base = mkdtempSync(join(tmpdir(), 'dsh-guard-sym-'))
+  try {
+    const realRoot = join(base, 'real-root')
+    mkdirSync(realRoot, { recursive: true })
+    const linkRoot = join(base, 'link-root')
     try {
-      const realRoot = join(base, 'real-root')
-      mkdirSync(realRoot, { recursive: true })
-      const linkRoot = join(base, 'link-root')
-      symlinkSync(realRoot, linkRoot)
-      const home = join(linkRoot, 'dsh')
-      mkdirSync(home, { recursive: true })
-
-      const result = runGuard(home, { TMPDIR: linkRoot, TMP: linkRoot, TEMP: linkRoot })
-      assert.equal(
-        result.status,
-        0,
-        `a symlinked temp root must still accept its own child home; stderr: ${result.stderr}`
-      )
-      assert.match(result.stdout, /guard\s*: ok/)
-    } finally {
-      rmSync(base, { recursive: true, force: true })
+      symlinkSync(realRoot, linkRoot, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      if (process.platform === 'win32') {
+        t.skip('this Windows runner refused an elevation-free junction: ' + String(error && error.code))
+        return
+      }
+      throw error
     }
+    const home = join(linkRoot, 'dsh')
+    mkdirSync(home, { recursive: true })
+
+    const result = runGuard(home, { TMPDIR: linkRoot, TMP: linkRoot, TEMP: linkRoot })
+    assert.equal(
+      result.status,
+      0,
+      'a linked temp root must still accept its own child home; stderr: ' + result.stderr
+    )
+    assert.match(result.stdout, /guard\s*: ok/)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
   }
-)
+})

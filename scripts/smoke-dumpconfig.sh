@@ -36,7 +36,9 @@ skip() {
   exit 0
 }
 
-command -v "$DSH" >/dev/null 2>&1 || skip "$DSH is not on PATH"
+# DSH_BIN may be an absolute path (CI points it at a throwaway prefix), so name the
+# resolved binary in the reason rather than claiming it is "not on PATH".
+command -v "$DSH" >/dev/null 2>&1 || skip "no runnable dsh at '$DSH'; set DSH_BIN to point at one"
 command -v pnpm >/dev/null 2>&1 || skip "pnpm is not on PATH, and 'dsh plugin add' needs it"
 
 # The path must not exist yet: the guard resolveLoose()s it, and on macOS an

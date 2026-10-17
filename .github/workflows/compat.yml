@@ -56,6 +56,13 @@ jobs:
         env:
           DSH_BIN: ${{ runner.temp }}/dsh-next/bin/dsh
           DSH_HOME: ${{ runner.temp }}/dsh-home
+          # This job can only ever verify the assembly layer: it has no model
+          # credential, so A7 (a real multi-turn session) is unavoidably skipped.
+          # SMOKE_ALLOW_SKIP declares exactly that scope, so an otherwise-clean
+          # run exits 0 instead of 2. It does NOT relax the script: the
+          # conclusion line still says "INCOMPLETE ... NOT fully verified", and
+          # any *failure* is still exit 1.
+          SMOKE_ALLOW_SKIP: '1'
         run: |
           node scripts/assert-isolated-home.mjs
           node scripts/smoke-runtime.mjs
