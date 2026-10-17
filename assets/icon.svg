@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Codex-style compaction">
+  <title>Codex-style compaction</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b6ef5"/>
+      <stop offset="1" stop-color="#7a3ff0"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+  <!-- compressed history: four lines folding into one durable checkpoint -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-width="3">
+    <path d="M17 16h30" opacity="0.45"/>
+    <path d="M17 24h30" opacity="0.7"/>
+    <path d="M20 32h24"/>
+    <path d="M17 48h30" stroke-width="4"/>
+  </g>
+  <!-- the compaction arrows: everything above collapses into the bottom line -->
+  <g fill="#ffffff">
+    <path d="M26 38.5 32 45l6-6.5z" opacity="0.95"/>
+    <path d="M26 41.5 32 35l6 6.5z" opacity="0.35"/>
+  </g>
+  <circle cx="32" cy="55" r="2.5" fill="#ffffff" opacity="0.9"/>
+</svg>

@@ -1,0 +1,116 @@
+name: release
+
+# Triggered by a tag, never by a pull request: this is the "publish" path, not a
+# gate. Required status checks stay ci / linux, ci / windows, ci / macos,
+# ci / node22 (docs/PLAN.md §4.3).
+#
+# The point of this workflow is that a release cannot ship an artifact that
+# silently lost its dsh display metadata: scripts/verify-pack.mjs inspects the
+# real npm tarball (not the working tree) and --selftest proves the checks bite.
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm after verification (tag pushes always publish)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: release / verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # No install step: verify-pack.mjs only needs node + npm, and the artifact
+      # must be checkable even if the registry is unreachable.
+      - name: Verify the packed artifact (with fault-injection selftest)
+        run: node scripts/verify-pack.mjs --selftest
+
+      - name: Build the tarball that will be published
+        run: npm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: '*.tgz'
+          if-no-files-found: error
+
+  install-check:
+    name: release / install-check
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+
+      # A release must be installable, not merely well-formed: prove the tarball
+      # (not the checkout) mounts into a real profile.
+      - name: Install dsh and pnpm
+        run: |
+          npm install --global @deepseek-ai/dsh@next
+          npm install --global pnpm
+
+      - name: Install the tarball into a throwaway profile
+        env:
+          DSH_HOME: ${{ runner.temp }}/dsh-home
+        run: |
+          node scripts/assert-isolated-home.mjs
+          TARBALL="$(ls dsh-compress-codex-*.tgz | head -1)"
+          dsh plugin --profile releasecheck add "$PWD/$TARBALL"
+          dsh --profile releasecheck --dump-config > dump.txt
+          grep -B1 -A3 'id: compaction-basic' dump.txt
+          grep -B1 -A3 'id: compaction-codex' dump.txt
+          # Both the attribution and the disabled row are contractual here.
+          grep -q 'patched by dsh-compress-codex' dump.txt
+          grep -q 'disabled: true' dump.txt
+
+  publish:
+    name: release / publish
+    needs: [verify, install-check]
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+
+      - name: Publish with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::secrets.NPM_TOKEN is not configured; refusing to publish."
+            exit 1
+          fi
+          TARBALL="$(ls dsh-compress-codex-*.tgz | head -1)"
+          npm publish "$TARBALL" --provenance --access public
