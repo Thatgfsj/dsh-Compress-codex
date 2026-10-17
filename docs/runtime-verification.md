@@ -97,7 +97,7 @@ SMOKE_SESSION=1 DEEPSEEK_API_KEY=... node scripts/smoke-runtime.mjs
 > 注意：事件匹配用的是字面子串顺序，属于"最小可回填实现"；M2 落地时应把匹配器
 > 收紧到具体事件类型字段，并额外断言 `shadowedRange` 非空。
 
-## 5. 三条实测出来的约束（写测试的人必须知道）
+## 5. 四条实测出来的约束（写测试的人必须知道）
 
 ### 5.1 安装域解析只在 dsh 启动内存在——裸 node 解析会**假阴性**
 
@@ -143,6 +143,44 @@ dsh --profile <p> --patch <overlay.yml> </dev/null
 
 它 ~2s 退出（`dsh: a task is required, for example: dsh --profile headless "run the tests"`），
 组合与 `apply()` 都已执行——既确定性、又不联网、也不需要凭据，适合 CI。
+
+### 5.4 `--dump-config-schema` 同步读 `Config`，且必须是原生 Schemastery schema
+
+本行的 schema 只有同时满足这两个条件才会进入 dump，否则该 entry 状态直接是 `unsupported`：
+
+- **同步**：dump 走 `Reflect.get(plugin, "Config")` 后立刻 `isNativeConfigSchema()` 判定
+  （`@deepseek-ai/dsh-app-boot/lib/index.js` L3402），既不 await，也不调用 lazy builder；
+- **原生**：需要 `Symbol.for("schemastery") === true` + `type: string` + `meta` 对象。
+
+这对本仓库的**零依赖门禁**是一个真实约束：schema 不能来自
+`await import("@deepseek-ai/schemastery")`（同步阶段拿不到值），也不能来自静态 import
+（`lib/index.js` 必须能在无 `node_modules` 时被 `node --test` import，否则整个门禁变红）。
+
+解法（#3 / PR #32）：用 `process.getBuiltinModule("node:module")` 取 `createRequire` 做
+**守卫式 require**，挂在默认导出的 `get Config()` 上。宿主包不存在时返回 `undefined`（不抛），
+真实运行时返回原生 schema。刻意用 `process.getBuiltinModule` 而不是 `import "node:module"`
+（后者会多一条静态 import），是为了让 `test/layering.test.mjs` 的"静态 import 全部 first-party"
+断言继续成立。
+
+实测（dsh 0.2.1-rc.2）：
+
+```
+entry: schema   configRef: #/$defs/config66   complete: true
+schema 属性集 12/12 === POLICY_KEYS
+```
+
+**结论**：给本插件加配置键时，只要走 `lib/core/config.js` 的 `CONFIG_FIELDS`，schema 会自动
+跟上；任何绕过 `CONFIG_FIELDS` 手写 schema 的做法都会让 dump 与实现分叉。
+
+复现：
+
+```sh
+export DSH_HOME=$(mktemp -d)
+dsh plugin --profile schemacheck add .
+dsh --profile schemacheck --dump-config-schema > /tmp/schema.json
+node -e 'const s=JSON.parse(require("node:fs").readFileSync("/tmp/schema.json","utf8"));
+  console.log(s["x-cordis"].entries.find(e=>e.name==="dsh-compress-codex"))'
+```
 
 ## 6. 复现命令
 
