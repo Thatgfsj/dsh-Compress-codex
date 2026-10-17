@@ -56,11 +56,21 @@ pi: H -> H'      |H'| << |H|      subject to  TaskSuccess(H') ~= TaskSuccess(H)
 
 **可观察到的原生缺陷（这就是本项目的立项理由）**：保留比例是**按 token 预算**而非**按对话结构**的——它不知道"最近 3 轮任务上下文"比"更早的 5 万 token 工具日志"更该逐字保留；摘要格式是自由文本，缺少面向"续跑"的稳定字段（进展 / 决策 / 待办 / 触碰的文件）；多次压缩叠加时没有防漂移约定。Codex 正是针对这三点设计的。
 
-### 1.5 目标：Codex 策略（调研结论见 `docs/codex-notes.md`，随 #1 一并落库）
+### 1.5 目标：Codex 策略（已按源码证据回填）
 
-> 本节在 Codex 调研（`openai/codex` 源码）回填后定稿；不得以"印象中的 Codex"替代源码证据。
+证据：`docs/codex-notes.md`（337 行、41 处 [证据]）与 `docs/codex-dsh-mapping.md`（D1-D5 + C1-C5 对齐表）。
 
-待填字段：D1 触发算式、D2 切分边界、D3 保留点、D4 模板字段清单、D5 注入标记与续跑提示。
+| 维 | Codex 做法（源码证据） | 能否照搬 | 我们的取向 |
+|---|---|---|---|
+| **D1** | 三段式：`limit = min(config.limit, W*0.9)`；`full = W*0.95`；触发 `scope_tokens >= limit + buffer \|\| active >= full`；轮末检查默认 0（关闭）；后台投机 65% | ✅ 照搬（换输入） | 保留三段式，`W` 映射为 DSH 已解析容量；溢出仍走 DSH 的 `CONTEXT_WINDOW_EXCEEDED` |
+| **D2** | **不选切割点**：整体重建 `replacement_history` 并持久化 | ❌ 不可照搬 | DSH 是"在既有 surface 上替换一段"；必须自研范围选择器（议题 #5） |
+| **D3** | `COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000` 预算内只保留 **user 消息**，assistant/tool 一律进摘要 | ❌ 不可照搬 | Codex 有 `normalize_history` 兜底配对，DSH 没有 → 保留单元必须是 **C1 平衡区间**，绝不单留半对 |
+| **D4** | 9 行自由文本 + 4 条 bullet（进展与关键决策 / 重要上下文·约束·偏好 / 待办 / 关键数据与引用），有角色指令，无 schema、无必填校验 | ⚠️ 改造 | 以 4 条为最小基线，**扩展**"触碰的文件"与"已知坑/失败尝试"两个独立字段（立项理由之一），并加模板版本号 |
+| **D5** | 一条 **user 角色纯文本**，无 XML 标记，文本 = `SUMMARY_PREFIX + "\n" + 摘要`，置历史最后；靠 `content_kind` 做 harness 分类 | ⚠️ 改造 | 保留 SUMMARY_PREFIX 的续跑语义（"另一个模型已开始…不要重复工作"），但外层**必须**走 DSH 形态：`compactCheckpointSource` + `<compacted-summary>` 框定（C3） |
+
+**两条必须写进设计的负面结论**：
+1. **防漂移：Codex 没有任何显式机制**（只有"把旧摘要连同新历史再摘要一遍" + 一句 WarningEvent）→ 议题 #9 必须自研；文档不得声称"照搬 Codex"。
+2. **Codex 侧不存在 tool_call/result 切割约束**（只有内存历史的 `normalize_history` 不变量）→ 不能指望"事后 normalize"，必须**事前**用 `toolPairingBalancedBefore/After` 吸附边界。
 
 ---
 
