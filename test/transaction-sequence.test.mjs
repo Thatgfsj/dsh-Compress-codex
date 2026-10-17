@@ -372,10 +372,13 @@ test('reverse: a transaction that validates after the marker leaks the lock, and
 test('a stream of decisions never leaves two markers open', async () => {
   const session = createSession(SURFACE)
   const { engine, agent } = mount({ session, summarize: () => [{ type: 'text', text: 'summary' }] })
-  // The real surface does not change under this model (the host mutates it), so
-  // the second pass re-commits the same span; what is under test is that each
-  // pass closes its own marker instead of stacking locks.
+  // The real host rewrites the surface on a committed replacement and bumps
+  // surface.replaceGeneration; this model does not, so bump it by hand to keep
+  // modelling "a second pass against a surface that moved". What is under test is
+  // that each pass closes its own marker instead of stacking locks (#9 skips a
+  // repeat that happens on an unmoved surface — a different case).
   await engine.compactIfNeeded(agent, 'pressure', undefined)
+  session.surface.replaceGeneration += 1
   await engine.compactIfNeeded(agent, 'pressure', undefined)
   assert.deepEqual(EVENTS(session), [...TYPES, ...TYPES])
   assert.equal(assertBalancedMarkers(session, 'two passes'), 2)
