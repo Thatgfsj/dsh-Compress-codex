@@ -129,6 +129,7 @@ SMOKE RESULT: PASS
 - **影响**：#2 的 `--dump-config` 验收只在 compat（`continue-on-error: true`、非 required）里间接覆盖；`ci / node22` 也不在 required contexts 里（保护 JSON 只列三个 OS 作业）。
 - **建议**：把 dump 冒烟接进 `ci.yml`（或把 `ci / node22` 提为 required）。
 - **修复记录（task-20 / F5-a）**：`ci.yml` 新增 `ci / dump-smoke` 作业（best-effort：装不上 dsh/pnpm 时脚本打印 `SMOKE RESULT: SKIPPED` 并 exit 0，注册表故障不会让门禁变红；因此**未**加入 required contexts）。F5-b 已由 Lead 直接处理（`ci / node22` 现为 required）。
+  **实测结果（PR #45，run 39055042149）**：该作业在 CI 内**真的跑完了四条装配断言**并输出 `SMOKE RESULT: PASS`（先装 `@deepseek-ai/dsh@next` 613 包 + pnpm），不是 skip —— 覆盖缺口已关闭而不是换个地方继续空转。
 
 ### F6【高·文档反向失真】状态表停在 #5/#6/#7 合并之前
 - **证据**（当前 main = a6ca05b）：
@@ -145,7 +146,8 @@ SMOKE RESULT: PASS
 - 影响：Windows 腿不验证该缺陷形态；#22 的 macOS 结论不受影响。
 - 建议：无强制动作，建议在 `test/README.md` 的矩阵里显式标注"Windows 跳过"。
 - **修复记录（task-20 / F7）**：不再按平台整体跳过——POSIX 用目录符号链接，Windows 改用**目录 junction**（`symlinkSync(..., 'junction')`，`mklink /J` 语义，**无需提权**），它经同一 `GetFinalPathNameByHandle` 解析，复现同样的"两种写法指向同一目录"。只有该 runner 连 junction 都拒绝时才 `t.skip`（原因写在 skip 里）。
-  残余空白（如实记录）：**Windows 腿只覆盖"junction 可创建且两侧被一致解析"这一形态**；若 runner 拒绝 junction，则该形态在 Windows 上无等价、无提权构造，仅由 Linux/macOS 覆盖。`docs/runtime-verification.md` §5.4 是同一块知识的运行时侧记录。
+  **实测结果（PR #45，run 39055042149）**：`ci / windows` 上该用例 **PASS，`skipped 0`** —— 空白已**真正关闭**，不再是"已知空白"。唯一的残余情形是"未来某个 runner 拒绝 junction"，届时 skip 原因会带上 `error.code`。
+  `docs/runtime-verification.md` §5.4 是同一块知识的运行时侧记录。
 
 ---
 
