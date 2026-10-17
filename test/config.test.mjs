@@ -212,16 +212,40 @@ test('resolveModelPolicy returns the exact override, merged over the top level',
   assert.equal(resolveModelPolicy(policy, undefined), policy)
 })
 
-test('the plugin export carries a native schema for --dump-config-schema, or none', async () => {
-  // The dump resolves Config synchronously from the module export, so it cannot
-  // come from a dynamic import; see nativeConfigSchema(). In the zero-install
-  // gate the host package is absent and the getter must degrade, not throw.
+test('the plugin export owns a Config accessor, whatever it returns', async () => {
+  // WHY THIS TEST EXISTS (terminal-verification finding F3):
+  //
+  // dsh's --dump-config-schema resolves a plugin Config *synchronously* from the
+  // module export and refuses anything that is not a native Schemastery schema
+  // (dsh-app-boot/lib/index.js L3402 -> isNativeConfigSchema). That is the whole
+  // reason this accessor exists; the platform trap is written up in
+  // docs/runtime-verification.md §5.4.
+  //
+  // The accessor may legitimately return undefined *here*: the gate runs with zero
+  // installed dependencies, so the guarded require inside nativeConfigSchema()
+  // fails by design. That tolerance is exactly what hides a regression — renaming
+  // or deleting the accessor would look identical to a legitimate zero-install
+  // degradation, and the runtime schema would silently disappear while every test
+  // stayed green. So existence is asserted separately from the returned value.
   const plugin = (await import('../lib/index.js')).default
+
+  const descriptor = Object.getOwnPropertyDescriptor(plugin, 'Config')
+  assert.ok(descriptor !== undefined, 'the default export must own a Config property')
+  assert.equal(typeof descriptor.get, 'function', 'Config must be a getter: the dump evaluates it')
+  assert.equal(descriptor.set, undefined, 'the schema must not be assignable')
+
   const schema = plugin.Config
-  assert.ok(schema === undefined || typeof schema === 'function', 'a native Schemastery schema is callable')
-  if (schema !== undefined) {
-    assert.deepEqual(Object.keys(schema.dict ?? {}).sort(), [...POLICY_KEYS].sort())
+  if (schema === undefined) {
+    // Zero-install gate: the host package is absent and the getter must degrade
+    // rather than throw. There is no value left to assert.
+    return
   }
+  // Real runtime: exactly the shape isNativeConfigSchema() accepts.
+  assert.equal(Reflect.get(schema, Symbol.for('schemastery')), true, 'must be a native Schemastery schema')
+  assert.equal(typeof Reflect.get(schema, 'type'), 'string')
+  const meta = Reflect.get(schema, 'meta')
+  assert.ok(meta !== null && typeof meta === 'object', 'a native schema carries a meta object')
+  assert.deepEqual(Object.keys(schema.dict ?? {}).sort(), [...POLICY_KEYS].sort())
 })
 
 test('resolveModelPolicy is a no-op when no table is configured', () => {
