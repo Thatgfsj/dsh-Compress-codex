@@ -157,6 +157,9 @@ test('an in-history system/message is kept when the detour still releases most o
   assert.equal(plan.systemBarrier, 'kept')
   assert.equal(plan.systemBarrierPreference, 'applied')
   assert.ok(indexOfSeq(events, 10) > indexOfSeq(events, plan.end))
+  // The detour's cost is observable for #13: one unit / four nodes kept back.
+  assert.deepEqual([plan.systemBarrierSkippedUnits, plan.systemBarrierSkippedNodes], [1, 4])
+  assert.match(plan.reason, /4 node\(s\) kept back/)
   assertSafeRange(events, plan, 'barrier-kept')
 })
 
@@ -167,6 +170,7 @@ test('an in-history system/message is crossed rather than making a long session 
   assert.equal(plan.systemBarrier, 'crossed')
   assert.equal(plan.systemBarrierPreference, 'declined')
   assert.equal(plan.shadowedNodeCount, 13, 'the early prompt update does not block compaction')
+  assert.equal(plan.systemBarrierSkippedNodes, 0, 'a crossed barrier gives up nothing')
   assert.match(plan.reason, /crossed/)
   assertSafeRange(events, plan, 'barrier-crossed')
   // Reverse: a hard barrier would stop in front of the system node and gut compaction.
@@ -179,6 +183,7 @@ test('an in-history system/message is crossed rather than making a long session 
   const retained = planOf(build([...TWO_UNITS, 'system']), { retainRecentUnits: 1 })
   assert.equal(retained.systemBarrier, 'kept')
   assert.equal(retained.systemBarrierPreference, 'not-needed')
+  assert.equal(retained.systemBarrierSkippedNodes, 0)
 })
 
 test('an injected host checker is used and reported', () => {
