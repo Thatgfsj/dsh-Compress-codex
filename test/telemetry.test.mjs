@@ -19,6 +19,8 @@ import {
   renderCompactionReport,
   reportLevel
 } from '../lib/core/telemetry.js'
+import { createCodexCompactionEngine } from '../lib/engine.js'
+import { SUMMARY_PREFIX } from '../lib/core/prompt.js'
 
 const NUMBERS = {
   windowTokens: 200000,
@@ -68,10 +70,14 @@ const MEASUREMENT = {
 
 const report = (over = {}) => buildCompactionReport({ trigger: 'pressure', ...over })
 
+/** An error carrying an explicit code, like the adapter errors #7 surfaces. */
+const coded = (code, message = code) => Object.assign(new Error(message), { code })
+
 test('the outcome union, its levels and its input guard are closed', () => {
-  assert.deepEqual(REPORT_OUTCOMES, ['delegated', 'skipped', 'blocked', 'compacted', 'degraded', 'failed'])
-  assert.equal(reportLevel('skipped'), 'debug')
-  assert.equal(reportLevel('delegated'), 'debug')
+  assert.deepEqual(REPORT_OUTCOMES, ['delegated', 'skipped', 'blocked', 'noop', 'compacted', 'degraded', 'failed'])
+  for (const outcome of ['skipped', 'delegated', 'noop']) {
+    assert.equal(reportLevel(outcome), 'debug', outcome)
+  }
   for (const outcome of ['blocked', 'compacted', 'degraded', 'failed']) {
     assert.equal(reportLevel(outcome), 'info', outcome)
   }
@@ -111,6 +117,19 @@ test('a delegated decision explains why this layer did not take over', () => {
 
   const overflowOff = report({ trigger: 'context-overflow', outcome: 'delegated', decision: { action: 'delegate', reason: 'd1-overflow-recovery-disabled' } })
   assert.match(overflowOff.why, /overflow recovery is disabled/)
+})
+
+test('a noop decision explains why running nothing was deliberate', () => {
+  const noop = report({
+    outcome: 'noop',
+    decision: { action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS },
+    selection: { status: 'none', reason: 'r1-pure-checkpoint-region' }
+  })
+  assert.equal(noop.triggered, true, 'D1 did ask for a compaction')
+  assert.equal(noop.level, 'debug', 'a per-step deliberate skip must not spam info')
+  assert.match(noop.why, /deliberately ran nothing/)
+  assert.match(noop.why, /r1-pure-checkpoint-region/)
+  assert.match(noop.span, /^none — r1-pure-checkpoint-region$/)
 })
 
 test('a blocked decision carries the selector reason, never silence', () => {
@@ -319,3 +338,236 @@ test('building a report mutates neither its inputs nor its output shape', () => 
     'selection', 'span', 'tokens', 'trigger', 'triggered', 'why'
   ])
 })
+
+// ── engine wiring: the report reaches the log on the live path ──────────────
+
+/** Fake base exposing the one transaction hook the engine calls. */
+function createWiringBase() {
+  const calls = { compactRegion: [] }
+  class WiringBase {
+    constructor(ctx, config = {}) {
+      this.ctx = ctx
+      this.config = config
+    }
+
+    async compactIfNeeded() {
+      return { base: true }
+    }
+
+    compactNow() {
+      return { base: true }
+    }
+
+    async compactRegion(start, end, agent, signal) {
+      calls.compactRegion.push([start, end])
+      const result = await this.summarize({ tools: [], messages: [] }, agent, signal)
+      return { ...result, region: [start, end] }
+    }
+  }
+  return { WiringBase, calls }
+}
+
+/** Recording logger with all four levels; `debug: false` models a logger below debug. */
+function createWiringLogger({ debug = true } = {}) {
+  const journal = []
+  const logger = {
+    journal,
+    info: (...args) => journal.push({ level: 'info', args }),
+    warn: (...args) => journal.push({ level: 'warn', args }),
+    error: (...args) => journal.push({ level: 'error', args })
+  }
+  if (debug) logger.debug = (...args) => journal.push({ level: 'debug', args })
+  return logger
+}
+
+const WIRING_AGENT = () => ({
+  options: { provider: 'acme', model: 'chat' },
+  session: { id: 's1', requestHeader: () => undefined, toolHistory: () => ({ tools: [], updates: [] }) }
+})
+
+/** Fake stream that throws the scripted errors in order, then succeeds. */
+function createWiringLlm(errors = []) {
+  let call = 0
+  return {
+    stream() {
+      const failure = errors[call]
+      call += 1
+      if (failure !== undefined) throw failure
+      return [
+        { type: 'text-delta', index: 0, text: 'summary' },
+        { type: 'finish', reason: { kind: 'stop' } }
+      ]
+    }
+  }
+}
+
+function mountWiring({ errors = [], logger = createWiringLogger(), hooks = {}, measurement } = {}) {
+  const { WiringBase, calls } = createWiringBase()
+  const Engine = createCodexCompactionEngine(WiringBase, {
+    decideCompaction: () => ({ action: 'skip', reason: 'd1-below-threshold', numbers: NUMBERS }),
+    selectCompactionRange: () => null,
+    planCompactionRange: () => ({ status: 'none', reason: 'no surface to shadow' }),
+    ...hooks
+  })
+  const ctx = {
+    llm: createWiringLlm(errors),
+    tokenMeter: { measure: () => measurement ?? { totalTokens: 0 } },
+    logger
+  }
+  const engine = new Engine(ctx, { summarizationProvider: 'sum', summarizationModel: 'small' })
+  return { engine, logger, calls }
+}
+
+test('an untriggered decision reaches the log with its reason (skipped / delegated)', async () => {
+  const skipped = mountWiring()
+  assert.equal(await skipped.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined), null)
+  assert.deepEqual(skipped.calls.compactRegion, [], 'a skip is a zero-write decision')
+  assert.equal(skipped.logger.journal.length, 1)
+  const [entry] = skipped.logger.journal
+  assert.equal(entry.level, 'debug')
+  assert.match(entry.args[0], /^dsh-compress-codex: compaction report: pressure \/ skipped$/m)
+  assert.match(entry.args[0], /below both thresholds/)
+  assert.match(entry.args[0], /active 150000/)
+  assert.equal(entry.args[1].outcome, 'skipped')
+
+  const delegated = mountWiring({
+    hooks: { decideCompaction: () => ({ action: 'delegate', reason: 'd1-no-window', numbers: { ...NUMBERS, windowTokens: null } }) }
+  })
+  assert.deepEqual(await delegated.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined), { base: true })
+  assert.match(delegated.logger.journal[0].args[0], /not taken over: the routed context window is unknown/)
+})
+
+test('a blocked decision pays for one read-only plan and logs the reason at info', async () => {
+  let planCalls = 0
+  const blocked = mountWiring({
+    hooks: {
+      decideCompaction: () => ({ action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS }),
+      planCompactionRange: () => {
+        planCalls += 1
+        return { status: 'none', reason: 'structural retention keeps every one of the 2 compactable unit(s); nothing to shadow' }
+      }
+    }
+  })
+  assert.equal(await blocked.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined), null)
+  assert.equal(planCalls, 1, 'the plan runs only on the blocked path')
+  const [entry] = blocked.logger.journal
+  assert.equal(entry.level, 'info')
+  assert.match(entry.args[0], /pressure \/ blocked/)
+  assert.match(entry.args[0], /nothing safe to shadow/)
+  assert.match(entry.args[0], /keeps every one of the 2 compactable unit\(s\)/)
+})
+
+test('a compacted decision logs the span and the measured token ledger at info', async () => {
+  const measurement = { totalTokens: 300, surfaceTokens: 300, nodes: [{ seq: 12, tokens: 100 }, { seq: 48, tokens: 200 }] }
+  const compacted = mountWiring({
+    measurement,
+    hooks: {
+      decideCompaction: () => ({ action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS }),
+      selectCompactionRange: () => ({
+        start: 12,
+        end: 48,
+        retainFrom: 50,
+        reason: 'structural retention: keep the newest 3 of 11 units',
+        shadowedUnitCount: 8,
+        retainedUnitCount: 3,
+        tokenBudgetApplied: true,
+        systemBarrier: 'kept',
+        systemBarrierSkippedNodes: 2
+      })
+    }
+  })
+  const result = await compacted.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined)
+  assert.ok(result.summary, 'the transaction committed')
+  const [entry] = compacted.logger.journal
+  assert.equal(entry.level, 'info')
+  assert.match(entry.args[0], /pressure \/ compacted/)
+  assert.match(entry.args[0], /\[12\.\.48\] shadowing 8 unit\(s\)/)
+  assert.match(entry.args[0], /barrier cost: 2 node\(s\) not released/)
+  assert.match(entry.args[0], /tokens: released 300 token\(s\)/)
+  assert.equal(entry.args[1].accounting.releasedTokens, 300)
+})
+
+test('an idempotence noop is reported with its plan reason, at debug', async () => {
+  // #9 R1: a region holding only an existing checkpoint gains nothing from another
+  // projection, so the engine runs nothing — but it must still explain itself.
+  const session = {
+    id: 's1',
+    requestHeader: () => undefined,
+    toolHistory: () => ({ tools: [], updates: [] }),
+    surface: { nodes: [1, 2] },
+    // Both nodes read as checkpoints: #9's default predicate recognises our own
+    // projection prefix (SUMMARY_PREFIX), which every replacement message carries.
+    eventAt: (seq) => ({
+      type: 'user/message',
+      data: {
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: SUMMARY_PREFIX + '\ncheckpoint ' + seq }]
+        }
+      }
+    })
+  }
+  const noop = mountWiring({
+    // Both nodes read as checkpoints when the injected predicate says so.
+    hooks: {
+      decideCompaction: () => ({ action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS }),
+      selectCompactionRange: () => ({ start: 1, end: 2 })
+    }
+  })
+  const agent = { ...WIRING_AGENT(), session }
+  assert.equal(await noop.engine.compactIfNeeded(agent, 'pressure', undefined), null)
+  const [entry] = noop.logger.journal
+  assert.equal(entry.level, 'debug')
+  assert.match(entry.args[0], /pressure \/ noop/)
+  assert.match(entry.args[0], /deliberately ran nothing|no compaction needed|could not/i)
+})
+
+test('degraded and failed outcomes are reported beside the #10 alerts', async () => {
+  const degraded = mountWiring({
+    errors: [coded('E_PROVIDER'), coded('E_PROVIDER')],
+    hooks: {
+      decideCompaction: () => ({ action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS }),
+      selectCompactionRange: () => ({ start: 12, end: 48 })
+    }
+  })
+  assert.equal(await degraded.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined), null)
+  const degradedReport = degraded.logger.journal.find((entry) => entry.args[1]?.outcome === 'degraded')
+  assert.ok(degradedReport, 'the degraded outcome is reported')
+  assert.equal(degradedReport.level, 'info')
+  assert.match(degradedReport.args[0], /degraded, the session continues after 2 attempt\(s\)/)
+  assert.ok(degraded.logger.journal.some((entry) => entry.level === 'error'), '#10 still raises its degrade alert')
+
+  const busy = coded('busy', 'compaction already in progress')
+  const failed = mountWiring({
+    errors: [busy],
+    hooks: {
+      decideCompaction: () => ({ action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS }),
+      selectCompactionRange: () => ({ start: 12, end: 48 })
+    }
+  })
+  let caught
+  try {
+    await failed.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined)
+  } catch (error) {
+    caught = error
+  }
+  assert.equal(caught, busy, 'the failure still propagates by identity')
+  const failedReport = failed.logger.journal.find((entry) => entry.args[1]?.outcome === 'failed')
+  assert.ok(failedReport, 'the failed outcome is reported')
+  assert.match(failedReport.args[0], /failed after 1 attempt\(s\): busy: compaction already in progress/)
+})
+
+test('a logger below debug stays quiet for per-step outcomes but still gets blocked/compacted', async () => {
+  const quiet = mountWiring({ logger: createWiringLogger({ debug: false }) })
+  await quiet.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined)
+  assert.deepEqual(quiet.logger.journal, [], 'no debug channel means no per-step spam')
+
+  const loud = mountWiring({
+    hooks: {
+      decideCompaction: () => ({ action: 'compact', reason: 'd1-limit-reached', numbers: NUMBERS })
+    }
+  })
+  await loud.engine.compactIfNeeded(WIRING_AGENT(), 'pressure', undefined)
+  assert.deepEqual(loud.logger.journal.map((entry) => entry.level), ['info'], 'the blocked report is still delivered')
+})
+
