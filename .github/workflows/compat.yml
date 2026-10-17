@@ -39,8 +39,14 @@ jobs:
 
       # A throwaway prefix: never touch a preinstalled dsh on the runner, so the
       # check genuinely exercises the prerelease rather than the shipped one.
-      - name: Install dsh@next into a throwaway prefix
-        run: npm install --global --prefix "$RUNNER_TEMP/dsh-next" dsh@next
+      #
+      # NOTE the scoped name. The npm package is @deepseek-ai/dsh (dist-tag
+      # `next` -> 0.2.1-rc.2); a bare `dsh` on npm is an UNRELATED package
+      # (1.0.1) with no `next` tag, and installing it would silently test the
+      # wrong thing. Verified 2026-10-17: `npm view @deepseek-ai/dsh dist-tags`
+      # => { latest: 0.2.0-rc.2, next: 0.2.1-rc.2, alpha: 0.2.1-alpha.5 }.
+      - name: Install @deepseek-ai/dsh@next into a throwaway prefix
+        run: npm install --global --prefix "$RUNNER_TEMP/dsh-next" @deepseek-ai/dsh@next
 
       # 'dsh plugin add' forwards to pnpm inside the profile directory.
       - name: Provide pnpm
