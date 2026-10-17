@@ -1,4 +1,5 @@
 node_modules/
+.dsh-ops-update-*.lock
 *.tgz
 *.tar.gz
 dist/
