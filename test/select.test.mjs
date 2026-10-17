@@ -98,6 +98,7 @@ test('corrupt surfaces and unsupported policy fail closed without writing', () =
     { retainRecentUnits: 0 },
     { retainRecentUnits: 1.5 },
     { retainRecentUnits: '3' },
+    { retainTokens: 0 },
     { retainTokens: -1 },
     { retainTokens: 1.5 }
   ]
@@ -300,7 +301,8 @@ test('property: every returned span is C1-balanced, keeps node 0, and never spli
     const nodes = sequences(events)
     const retainRecentUnits = 1 + Math.floor(rng() * 4)
     const roll = rng()
-    const retainTokens = roll < 0.25 ? undefined : roll < 0.5 ? 0 : roll < 0.75 ? 40 : 400
+    // The #3 schema requires a positive integer; 1 is the smallest useful budget.
+    const retainTokens = roll < 0.25 ? undefined : roll < 0.5 ? 1 : roll < 0.75 ? 40 : 400
     const trigger = rng() < 0.2 ? 'context-overflow' : 'pressure'
     const plan = planOf(events, { retainRecentUnits, retainTokens }, {
       trigger,
@@ -337,7 +339,7 @@ test('reverse: a naive token-boundary cut splits a tool pair and the assertion c
   // Naive Codex-style port: cut at a token boundary, never check pairing.
   const naive = { start: events[1].seq, end: events[5].seq }
   assert.throws(() => assertSafeRange(events, naive, 'naive'), /balanced|orphan|close/)
-  const ours = rangeOf(events, { retainRecentUnits: 1, retainTokens: 0 })
+  const ours = rangeOf(events, { retainRecentUnits: 1, retainTokens: 1 })
   assert.doesNotThrow(() => assertSafeRange(events, ours, 'ours'))
   assert.equal(indexOfSeq(events, ours.end), 3, 'we pull the cut back to a whole-unit boundary')
 })
