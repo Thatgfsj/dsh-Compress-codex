@@ -1,8 +1,11 @@
-# dsh-Compress-codex — 项目计划（待审阅）
+# dsh-Compress-codex — 项目计划（已实施；附终态复核）
 
-> 状态：**计划稿，等待 owner 审阅**。审阅通过前不写实现代码、不合并任何 PR。
+> 状态：**计划已实施**。本文档保留立项时的第一性原则、约束推导与拆解方式；**当前真实状态
+> 以 [§5.1 终态复核](#51-终态复核2026-10-18) 为准**（2026-10-18 逐项核对源码与验证记录），
+> §7 的决策点也已逐条收敛。
 > 仓库：https://github.com/Thatgfsj/dsh-Compress-codex
-> 目标版本：本机 `dsh --version = 0.2.1-rc.2`
+> 已验证基线：本机 `dsh --version = 0.2.1-rc.2`（真实模型端到端见
+> [`docs/runtime-verification.md`](runtime-verification.md) §4）
 
 ## 0. 一句话
 
@@ -99,7 +102,7 @@ pi: H -> H'      |H'| << |H|      subject to  TaskSuccess(H') ~= TaskSuccess(H)
 
 `command-compact` 与 `tool-result-pruner` **保持不动**：它们按注释是 backend-independent 的，这让我们天然继承 `/compact` 与超大工具输出修剪能力。
 
-### 2.2 三个候选架构（**待审阅拍板**）
+### 2.2 三个候选架构（**已拍板：方案 B**）
 
 | 方案 | 做法 | 优点 | 代价 / 风险 |
 |---|---|---|---|
@@ -199,22 +202,51 @@ M0(#1) --> [合并门禁] --> M1(#2,#3) --> M2(#4..#8) --> M3(#9,#10) --> M4(#11
 
 M2 的 #5 / #6 可并行（不同 owner、写入范围不重叠）；#7、#8 依赖 #6 的模板定型。
 
+### 5.1 终态复核（2026-10-18）
+
+立项时的里程碑已全部走完。**下表是复核过的真实状态**，不是计划意图；证据可逐条回查。
+
+| 议题 | 终态 | 证据 |
+|---|---|---|
+| #1 骨架 + CI | ✅ 完成 | 三平台 `node --test` + 隔离守卫 + `npm pack`；分支保护 strict |
+| #2 引擎骨架 + 行替换 | ✅ 完成（自动化载体是**非门禁**的 `ci / compat-next`，见终验 F5） | `cordis.patch.yml`；`smoke-runtime.mjs` A1–A3 实测 |
+| #3 配置 schema | ✅ 完成 | `lib/core/config.js` `CONFIG_FIELDS`；`test/config.test.mjs` |
+| #4 D1 三段式 | ✅ 完成 | `lib/core/trigger.js`；`test/trigger.test.mjs` |
+| #5 D2/D3 结构化切分与保留 | ✅ **完成**（不再是"进行中"） | `lib/core/select.js`（C1 平衡单元 + 双端吸附 + 零写入）；`test/select.test.mjs` |
+| #6 D4 摘要模板与投影 | ✅ 完成 | `lib/core/prompt.js`；`test/prompt.test.mjs` |
+| #7 D4 摘要调用（回放/路由/取消） | ✅ **完成**（不再是"未开始"） | `lib/core/summarize.js`；`test/summarize.test.mjs`；真实会话 `cacheReadTokens` 非零 |
+| #8 D5 注入形态 | ⚠️ **未达成** | issue 仍 OPEN；相邻性与 `source.kind` 已由 `test/transaction-sequence.test.mjs` 断言，但"不给模型漏内部 id"无断言 |
+| #9 幂等与防漂移 | ✅ 完成 | `lib/core/idempotence.js` + 引擎 ledger/admit/antiDrift；`test/idempotence.test.mjs` |
+| #10 失败与降级 | ✅ 完成 | `lib/core/errors.js`；`test/errors.test.mjs`、`test/transaction-sequence.test.mjs` |
+| #11 测试矩阵 | ✅ 完成：终验的 2 条存活变异（F1 屏障比例、F2 单元起点）已由 #46 修复。**我在 rebase 后的 main 上亲自复测了这两条变异，均被抓住**：F1（`releasesEnough` 恒真）→ select 24 pass / 1 fail；F2（去掉单元起点的平衡守卫）→ 全量 257 pass / 1 fail；未变异基线 258 / 0 | `test/select.test.mjs`、`test/invariants.test.mjs`；变异复测见本 PR 描述 |
+| #12 真实运行时冒烟 | ✅ 完成：装配层 + **会话级已在真实模型上验证通过** | `scripts/smoke-runtime.mjs` A1–A7；`runtime-verification.md` §3/§4 |
+| #13 可观测性 | ✅ **模块 + 接线已合**；边界：**报告行尚未在真实会话日志中被观察过** | `lib/core/telemetry.js` + 测试；`lib/engine.js` 已 import `buildCompactionReport/renderCompactionReport/reportLevel` |
+| #14 文档 | ✅ 完成 | README / README.zh / architecture / release / runtime-verification |
+| #15 发布 | ✅ 完成 | `release.yml` + `scripts/verify-pack.mjs`（10/10 故障注入）；Web UI 外观未验证 |
+
+**仍未闭合的两处**（不要读成"项目还早"，也不要读成"全部完成"）：**#8**（D5 注入形态缺断言），
+以及 **#13 的报告行尚未在真实会话日志中被观察过**（模块与接线都已合，但没有实测过它的输出）；
+另有 A7 **不**证明的三件事（长会话质量 / 默认 `0.9 × W` 阈值下的时机 / 跨 tool-call 切割），
+见 [`docs/runtime-verification.md`](runtime-verification.md) §4.3。
+
 ---
 
 ## 6. 风险与未验证项
 
-| 风险 | 影响 | 缓解 |
-|---|---|---|
-| 溢出恢复 listener 随 `disabled: true` 丢失 | 上下文溢出后无法自愈 | #4 的验证任务先出结论；必要时自建 listener |
-| `dsh-compaction-basic` 内部结构随版本变动 | 继承点破裂 | 版本区间锁定 + `ci / compat-next` 作业（非门禁，红不阻塞） |
-| Codex 语义与 DSH 契约不完全对齐（如 Codex 无 tool-pairing 约束） | 直接照搬会产出非法请求 | 以 C1-C5 为上位约束，Codex 只借**策略**不借**契约** |
-| 摘要成本上升（结构化模板更长） | 每次压缩更贵 | 模板字段按"续跑必需"最小集，expensive 字段可选 |
-| 多轮压缩语义漂移 | 长会话质量衰减 | #9 专项 |
+| 风险 | 影响 | 缓解 | 终态 |
+|---|---|---|---|
+| 溢出恢复 listener 随 `disabled: true` 丢失 | 上下文溢出后无法自愈 | #4 的验证任务先出结论；必要时自建 listener | ✅ **已消解**：两个 listener 由实例构造函数注册，继承即继承（§2.3 源码证据） |
+| `dsh-compaction-basic` 内部结构随版本变动 | 继承点破裂 | 版本区间锁定 + `ci / compat-next` 作业（非门禁，红不阻塞） | ⏳ **持续**：`compat.yml` 已上线 |
+| Codex 语义与 DSH 契约不完全对齐（如 Codex 无 tool-pairing 约束） | 直接照搬会产出非法请求 | 以 C1-C5 为上位约束，Codex 只借**策略**不借**契约** | ✅ **已按此实施**（`docs/codex-dsh-mapping.md`） |
+| 摘要成本上升（结构化模板更长） | 每次压缩更贵 | 模板字段按"续跑必需"最小集，expensive 字段可选 | ✅ 已实施；真实会话实测 `cacheReadTokens=8064`（前缀缓存命中） |
+| 多轮压缩语义漂移 | 长会话质量衰减 | #9 专项 | ✅ 已实施（#9）；**但长会话质量仍未实测**（A7 只观测到一次压缩） |
 
-## 7. 待审阅决策点（请 owner 逐条批复）
+## 7. 决策点（**已逐条收敛**）
 
-- **Q1 架构**：选 A（全自研）/ **B（策略层继承，推荐，§2.3 已证实可行）**？ ← 无异议则默认按 B 执行
-- **Q2 兼容基线**：是否要求同时支持 `dsh 0.2.0-rc.2`，还是只锁 `0.2.1-rc.2` 并声明 `engines.dsh`？
-- **Q3 配置默认**：默认沿用官方写法（比例）还是改为 Codex 的绝对阈值 + 结构化保留？
-- **Q4 交付形态**：只发 npm 包，还是要一并产出"一键替换 profile"的安装脚本？
-- **Q5 议题粒度**：15 个议题是否需要再合/再拆（尤其 M2 的 #7/#8）？
+- **Q1 架构** → **B（策略层继承）**，已实施；§2.3 的源码证据 + A7 实测共同证实。
+- **Q2 兼容基线** → 只锁 `0.2.1-rc.2` 并验证；`dsh 0.2.0-rc.2` **未验证**（`engines.dsh` 未声明，
+  因此兼容性由 peer 区间决定）。`ci / compat-next` 持续观察 `dsh@next`。
+- **Q3 配置默认** → **Codex 三段式**（`triggerLimitRatio 0.9` / `effectiveWindowPercent 0.95` /
+  `turnEndPercent 0` / `triggerBufferTokens 0`）+ 结构保留，见 `docs/design-m1-m2.md` §5。
+- **Q4 交付形态** → 发 npm 包（bundle 形态）；安装走 `dsh plugin add`，未做"一键替换 profile"脚本。
+- **Q5 议题粒度** → 保持 15 个议题 + 后续补充议题（#22 守卫、#38 幂等接线等），未再合并。

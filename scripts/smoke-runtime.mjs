@@ -91,10 +91,16 @@ function blockFor(dump, id) {
   return ''
 }
 
+/**
+ * Stop before any assertion ran. Exit 2, not 0: "verified nothing" must never be
+ * reported as success by the exit code (see the verdict section). Callers that
+ * accept an unverified run opt in with SMOKE_ALLOW_SKIP=1.
+ */
 function bail(reason) {
   console.log('SMOKE RESULT: SKIPPED (' + reason + ')')
   console.log('SMOKE NOTE: this run verified nothing; report it as unverified.')
-  process.exit(0)
+  console.log('SMOKE NOTE: exit ' + (process.env.SMOKE_ALLOW_SKIP === '1' ? '0 (SMOKE_ALLOW_SKIP=1)' : '2') + ' from here.')
+  process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2)
 }
 
 // ---------------------------------------------------------------- prerequisites
@@ -367,9 +373,36 @@ function newestSessionFile(root) {
 }
 
 // ------------------------------------------------------------------- verdict
+//
+// The header says "a skip is NOT a pass"; that has to hold for a *machine*, not
+// only for a human reading the log. Exit codes are therefore part of the
+// contract, and 0 is reserved for a genuinely complete run:
+//
+//   0  every assertion passed and none was skipped
+//   1  at least one assertion FAILED
+//   2  everything that ran passed, but at least one assertion was SKIPPED, so the
+//      run is INCOMPLETE and must not be reported as verified
+//
+// A caller that deliberately does not ask for an opt-in assertion (the
+// non-gating `ci / compat-next` job has no model credential, so it never sets
+// SMOKE_SESSION=1) declares that scope with SMOKE_ALLOW_SKIP=1, which maps an
+// otherwise-clean but incomplete run to 0 — the explicit conclusion line is still
+// printed, so nothing is hidden, only the exit code is agreed.
 const failed = results.filter(([status]) => status === 'FAIL')
 const passed = results.filter(([status]) => status === 'OK').length
-const skipped = results.filter(([status]) => status === 'SKIP').length
-console.log('SMOKE SUMMARY: ' + passed + ' ok, ' + failed.length + ' failed, ' + skipped + ' skipped')
-console.log(failed.length === 0 ? 'SMOKE RESULT: PASS' : 'SMOKE RESULT: FAIL')
-process.exit(failed.length === 0 ? 0 : 1)
+const skippedRows = results.filter(([status]) => status === 'SKIP')
+const allowSkip = process.env.SMOKE_ALLOW_SKIP === '1'
+console.log('SMOKE SUMMARY: ' + passed + ' ok, ' + failed.length + ' failed, ' + skippedRows.length + ' skipped')
+if (failed.length > 0) {
+  console.log('SMOKE RESULT: FAIL (' + failed.length + ' failing assertion(s))')
+  process.exit(1)
+}
+if (skippedRows.length > 0) {
+  const names = skippedRows.map(([, what]) => String(what).split(' ')[0]).join(', ')
+  console.log('SMOKE RESULT: INCOMPLETE — PASS WITH ' + skippedRows.length + ' SKIPPED, NOT fully verified (' + names + ')')
+  console.log('SMOKE NOTE: re-run without skipping to claim verification' +
+    (allowSkip ? '; SMOKE_ALLOW_SKIP=1 therefore exits 0.' : '; this is exit 2.'))
+  process.exit(allowSkip ? 0 : 2)
+}
+console.log('SMOKE RESULT: PASS (complete — no failing, no skipped assertions)')
+process.exit(0)
