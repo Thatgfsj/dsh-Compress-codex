@@ -13,18 +13,36 @@
 
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
-/** Resolve a path without requiring it to exist yet. */
-function resolveLoose(path) {
-  if (existsSync(path)) {
-    try {
-      return realpathSync.native(path)
-    } catch {
-      return resolve(path)
-    }
+/**
+ * Canonicalize a path that need not exist yet.
+ *
+ * Resolving only the paths that happen to exist is not symmetric, and the
+ * asymmetry always cuts the same way: a temp root exists while a throwaway
+ * DSH_HOME usually does not. On macOS the root is a symlink
+ * (/var/folders -> /private/var/folders), so the resolved home is compared
+ * against an unresolved root and a legitimate home is refused. Realpath the
+ * longest existing ancestor and re-attach the remainder, so both sides of the
+ * containment check are compared in the same form.
+ */
+function canonicalize(target) {
+  const absolute = resolve(target)
+  let prefix = absolute
+  const remainder = []
+  while (!existsSync(prefix)) {
+    const parent = dirname(prefix)
+    if (parent === prefix) return absolute
+    remainder.unshift(basename(prefix))
+    prefix = parent
   }
-  return resolve(path)
+  let base
+  try {
+    base = realpathSync.native(prefix)
+  } catch {
+    return absolute
+  }
+  return remainder.length === 0 ? base : join(base, ...remainder)
 }
 
 const home = process.env.DSH_HOME
@@ -33,8 +51,8 @@ if (!home) {
   process.exit(1)
 }
 
-const real = resolveLoose(home)
-const realHome = resolve(homedir(), '.dsh')
+const real = canonicalize(home)
+const realHome = canonicalize(join(homedir(), '.dsh'))
 
 if (real.toLowerCase() === realHome.toLowerCase()) {
   console.error(`guard FAIL: DSH_HOME points at the real DSH home (${real})`)
@@ -43,9 +61,14 @@ if (real.toLowerCase() === realHome.toLowerCase()) {
 
 // Accept any temp root the platform or CI provides: RUNNER_TEMP is not always
 // under os.tmpdir(), notably on Windows runners where it lives on another drive.
+// Both sides of the containment check go through the same resolver. On macOS a
+// temp root is a symlink (/var/folders -> /private/var/folders): resolving only
+// DSH_HOME makes the two forms disagree and the guard refuses a legitimate
+// throwaway home. Asymmetry here is a false rejection, and a guard that
+// false-rejects is a guard people learn to bypass.
 const roots = [tmpdir(), process.env.RUNNER_TEMP, process.env.TMPDIR, process.env.TEMP]
   .filter((value) => typeof value === 'string' && value.length > 0)
-  .map((value) => resolve(value).toLowerCase())
+  .map((value) => canonicalize(value).toLowerCase())
 
 const matched = roots.find((root) => {
   const sep = root.endsWith('/') || root.endsWith('\\') ? '' : process.platform === 'win32' ? '\\' : '/'
