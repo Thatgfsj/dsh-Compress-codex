@@ -1,0 +1,72 @@
+name: compat
+
+# Forward-compatibility watch for dsh@next (docs/PLAN.md §6, risk
+# "dsh-compaction-basic 内部结构随版本变动").
+#
+# This workflow is deliberately NOT a required status check:
+#   `continue-on-error: true` keeps prerelease drift visible in the UI without
+#   ever being able to block main. Branch protection gates exactly ci / linux,
+#   ci / windows, ci / macos and ci / node22.
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'cordis.patch.yml'
+      - 'lib/**'
+      - 'scripts/smoke-runtime.mjs'
+      - '.github/workflows/compat.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compat-next:
+    name: ci / compat-next
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # A throwaway prefix: never touch a preinstalled dsh on the runner, so the
+      # check genuinely exercises the prerelease rather than the shipped one.
+      #
+      # NOTE the scoped name. The npm package is @deepseek-ai/dsh (dist-tag
+      # `next` -> 0.2.1-rc.2); a bare `dsh` on npm is an UNRELATED package
+      # (1.0.1) with no `next` tag, and installing it would silently test the
+      # wrong thing. Verified 2026-10-17: `npm view @deepseek-ai/dsh dist-tags`
+      # => { latest: 0.2.0-rc.2, next: 0.2.1-rc.2, alpha: 0.2.1-alpha.5 }.
+      - name: Install @deepseek-ai/dsh@next into a throwaway prefix
+        run: npm install --global --prefix "$RUNNER_TEMP/dsh-next" @deepseek-ai/dsh@next
+
+      # 'dsh plugin add' forwards to pnpm inside the profile directory.
+      - name: Provide pnpm
+        run: npm install --global pnpm
+
+      - name: Runtime smoke against dsh@next
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-next/bin/dsh
+          DSH_HOME: ${{ runner.temp }}/dsh-home
+        run: |
+          node scripts/assert-isolated-home.mjs
+          node scripts/smoke-runtime.mjs
+
+      # The patch vocabulary is what this bundle depends on. If a prerelease
+      # renames or drops `insert` / `disabled`, the dump above would still pass
+      # while the patch silently stops applying, so assert the schema names them.
+      - name: Patch-schema drift check
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-next/bin/dsh
+          DSH_HOME: ${{ runner.temp }}/dsh-home
+        run: |
+          "$DSH_BIN" --profile ci-schema --from-default-profile headless --dump-config-schema > "$RUNNER_TEMP/schema.json"
+          node -e "const s=require('node:fs').readFileSync(process.env.RUNNER_TEMP+'/schema.json','utf8'); for (const key of ['insert','disabled']) { if (!s.includes(key)) { console.error('patch schema no longer mentions: '+key); process.exit(1) } } console.log('patch schema still exposes insert/disabled')"
