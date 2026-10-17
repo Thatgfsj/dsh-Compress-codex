@@ -95,21 +95,29 @@ agent/pre-step (pressure)
                     └─ compaction/end
 ```
 
-## 5. 配置面（议题 #3 冻结）
+## 5. 配置面（议题 #3 冻结，已按 Codex 源码证据修正）
+
+> **修正记录**：初稿的单一 `triggerRatio`（0.8）是错的。证据（`docs/codex-notes.md` §1）显示 Codex 是**三段式**：
+> `limit = min(config.limit, W * 0.9)`、`full = W * 0.95`，触发条件 `scope_tokens >= limit + buffer || active_tokens >= full`，
+> 另有轮末百分比检查（默认 0 = 关闭）与后台投机检查（65%）。故配置面按此重构。
 
 ```ts
 interface CodexCompactionConfig {
-  // D1
-  triggerRatio?: number;        // 默认 0.8x 语义对齐 Codex；范围 (0,1)
-  overflowRecovery?: boolean;   // 默认 true
-  // D2/D3
-  retainMode?: 'structural';    // 结构保留（Codex 风格），默认
-  retainRecentUnits?: number;   // 保留最近 N 个结构单元（轮/工具对）
-  retainTokens?: number;        // 兼容绝对 token 下限兜底
-  // D4
-  summaryTemplate?: 'codex-v1';
-  summaryFields?: string[];
-  // 路由
+  // ── D1 触发（Codex 三段式）
+  triggerLimitTokens?: number;      // 绝对上限（可选，对应 Codex config.limit）
+  triggerLimitRatio?: number;       // 窗口比例上限，默认 0.9；范围 (0,1)
+  effectiveWindowPercent?: number;  // 硬满上限比例，默认 0.95；必须 > triggerLimitRatio
+  triggerBufferTokens?: number;     // limit 之上的缓冲
+  turnEndPercent?: number;          // 轮末检查比例，默认 0（关闭）
+  overflowRecovery?: boolean;       // 默认 true：CONTEXT_WINDOW_EXCEEDED 时强制一次缩减
+  // ── D2/D3 切分与保留
+  retainMode?: 'structural';        // 默认：以 C1 平衡区间为原子，绝不单留半对
+  retainRecentUnits?: number;       // 保留最近 N 个结构单元（轮/步）
+  retainTokens?: number;            // 近期预算上限（兜底，非唯一依据）
+  // ── D4 摘要
+  summaryTemplate?: 'codex-v1';     // 模板版本号，用于度量漂移
+  summaryExtraFields?: ('files' | 'pitfalls')[];  // Codex 4 条之外的扩展字段，默认全开
+  // ── 路由
   summarizationProvider?: string;
   summarizationModel?: string;
   maxTokens?: number;
@@ -118,7 +126,12 @@ interface CodexCompactionConfig {
 }
 ```
 
-校验必须快速失败：未知键、`retainRecentUnits < 1`、`triggerRatio` 越界、保留预算 >= 阈值、路由只给一半。
+**token 计数**：不引入第二套估算，沿用 DSH 的 `ctx.tokenMeter` 影子计价；仅在缺少 provider usage 时用 DSH 自带 estimator 兜底（证据 `docs/codex-dsh-mapping.md` 的 D1' 行）。
+
+**D4 字段基线**（Codex 原文 4 条 bullet）：进展与关键决策 / 重要上下文·约束·偏好 / 待办 / 关键数据与引用。
+Codex **没有**"触碰的文件"与"已知坑"独立字段 → 由 `summaryExtraFields` 显式扩展，默认开启（这是本项目的立项理由之一）。
+
+校验必须快速失败：未知键、`triggerLimitRatio` 越界、`effectiveWindowPercent <= triggerLimitRatio`、`retainRecentUnits < 1`、保留预算 >= 触发阈值、路由只给一半。
 
 ## 6. 测试装置要求（议题 #11 前置）
 
