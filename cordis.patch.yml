@@ -5,23 +5,23 @@
 # profile's `dsh.profile.bundles`. It never runs standalone — the layer we patch
 # is owned by `dsh-base`, whose compaction section is documented in docs/PLAN.md §2.1.
 #
-# M0 (#1) ships the skeleton only. The row below mounts this package so the
-# bundle is real: it resolves, it shows up in `dsh --profile <p> --dump-config`,
-# and `dsh plugin remove` can take it back off. The host half (lib/index.js) is
-# a placeholder that registers nothing, so installing the bundle today leaves
-# the official compaction policy in charge — it is a no-op, not a half wire-up.
+# M1-2 (#2) performs the seam replacement in two ops:
 #
-# M1-2 (#2) turns this into the actual seam replacement, per docs/PLAN.md §2.1:
-#
-#   - id: compaction-basic
-#     name: '@deepseek-ai/dsh-compaction-basic'
-#     disabled: true                        # drop the official policy
-#   - insert:
-#       - id: compaction-codex
-#         name: 'dsh-compress-codex'
+#   1. disable the official backend row, so exactly one implementation of
+#      ctx.compaction is live;
+#   2. insert ours, which extends the class the disabled row used to mount
+#      (lib/index.js imports @deepseek-ai/dsh-compaction-basic lazily, so the
+#      package itself is still required at runtime — we override a row, we do
+#      not vendor the backend).
 #
 # `command-compact` and `tool-result-pruner` stay untouched on purpose: they are
 # backend-independent, so /compact and oversized tool-output pruning keep working.
+#
+# scripts/smoke-dumpconfig.sh asserts all three invariants (row disabled, our row
+# mounted, no "patch: entry not found") against a throwaway DSH_HOME.
+- id: compaction-basic
+  name: '@deepseek-ai/dsh-compaction-basic'
+  disabled: true
 - insert:
     - id: compaction-codex
       name: 'dsh-compress-codex'
