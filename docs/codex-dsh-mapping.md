@@ -46,7 +46,21 @@
 
 ---
 
-## 4. 引用
+## 4. 议题 #9 幂等与防漂移：**DSH 自研，Codex 无对应机制**
+
+**如实标注**：Codex 侧**没有任何显式防漂移机制**（`docs/codex-notes.md` §6.2）；它唯一的动作是"把旧摘要连同新历史再摘要一遍"加一句 `WarningEvent`（`compact.rs#L442-L445`）。因此 `lib/core/idempotence.js` **不是** Codex 策略的移植，而是从"压缩是有损投影、级联投影会放大损失"这一问题自研出来的。任何文档、PR 或对外描述都**不得**称其为"Codex 风格"。上节 Top 3 的第 3 条即此。
+
+三条规则（实现见 `lib/core/idempotence.js`）：
+
+| 规则 | 条件 | 动作 | 理由 |
+|---|---|---|---|
+| **R1 noop** | 范围内只有既有检查点、没有新历史 | 跳过（零写入） | 对纯检查点再投影一次是纯损失，且破坏幂等 |
+| **R2 chain** | 新历史 + ≥1 个既有检查点 | 旧摘要成为**必须保留的输入段**；它携带的每个字段都必须存活 | 合并优于拒绝（拒绝会让会话卡死：范围持续增长），也优于丢弃（丢弃会失去自愈能力） |
+| **R3 fresh** | 范围内无检查点 | 普通摘要 | 但"字段不得凭空消失"的审计仍然适用 |
+
+**字段存活判定**：核心四字段恒需；`files` / `pitfalls` 这类可省字段遵循"有过就不能丢"。判定用模板 bullet 严格匹配——宁可报错也不误判为"还在"，因为误判恰好会掩盖漂移。引擎在 `summarize` 返回前用 `assertAntiDrift` 校验链式摘要；`compactIfNeeded` 用 R1 与幂等账本（同一范围 + 同一内容只压一次，且**事务成功后才记账**，所以失败仍可重试）。
+
+## 5. 引用
 
 - DSH 契约：`docs/PLAN.md` §1.2 / §1.4；`@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-compaction/lib/types/{types,tool-pairing,checkpoint}.d.ts`
 - DSH 摘要器接口：`@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-compaction-basic/lib/types/summarizer.d.ts`
