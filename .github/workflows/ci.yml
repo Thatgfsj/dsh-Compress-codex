@@ -140,3 +140,21 @@ jobs:
         env:
           DSH_BIN: ${{ runner.temp }}/dsh-anchor/bin/dsh
         run: bash scripts/preset-drift-check.sh --selftest
+
+      # Offline codex-ptc criteria (#62, docs/ci-codex-ptc.md). These are static
+      # and composition facts about the generated preset: no credentials, no model
+      # call, no real session — CI cannot run one (no secrets, and compat.yml opens
+      # SMOKE_ALLOW_SKIP so A7 is always SKIP). The session-level criteria S1/S2
+      # therefore stay unverified here and are reported as such, never as a pass.
+      #
+      # Deliberately a STEP, not a new job: it needs the same dsh install as the
+      # anchor check above, and a separate job would pay the ~36s install again.
+      # Deliberately NOT in the required checks: main is strict + enforce_admins,
+      # so adding it would turn an upstream preset change into a merge blocker.
+      #
+      # The step asserts its own honesty: an INCOMPLETE verdict may not contain the
+      # substring PASS, and each injected fault must turn the checker red.
+      - name: Offline codex-ptc criteria (O1-O4)
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-anchor/bin/dsh
+        run: bash scripts/preset-drift-check.sh --offline
