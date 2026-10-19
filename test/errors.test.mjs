@@ -180,7 +180,10 @@ const CLASSIFICATION = [
   ['persistence code', coded('persistence'), 'persistence', 'propagate'],
   ['summary code', coded('summary'), 'summary', 'retry'],
   ['#7 NO_SUMMARIZATION_ROUTE', coded(NO_ROUTE_CODE), 'summary', 'retry'],
-  ['#7 NO_SUMMARY_CONTENT', coded(NO_CONTENT_CODE), 'summary', 'retry'],
+  // Issue #50 evidence (session-292e6b17): a reasoning-only answer produced no
+  // text summary three separate times in one session, so a same-transaction retry
+  // cannot help; the next step's fresh trigger re-attempts anyway.
+  ['#7 NO_SUMMARY_CONTENT', coded(NO_CONTENT_CODE), 'summary', 'degrade'],
   ['#7 MAX_TOKENS', coded(TRUNCATED_CODE), 'summary', 'retry'],
   ['#7 UNPROJECTED_SUMMARY', coded(UNPROJECTED_CODE), 'summary', 'retry'],
   ['adapter provider failure', coded('E_PROVIDER', 'provider exploded'), 'summary', 'retry'],
