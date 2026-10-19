@@ -90,7 +90,7 @@ agent/request-error (CONTEXT_WINDOW_EXCEEDED)
 
 官方默认值来自其 README：触发 `floor(min(W × 0.8, W − O − B))`（`B = 65,536`），保留 `W − O` 的 16%。
 
-| 维度 | 官方 `compaction-basic` | 本插件（Codex 风格） | 状态 |
+| 维度 | 官方 `compaction-basic` | 本插件（D1/D4 取 Codex 策略；D3 与 #9 防漂移为 DSH 自研） | 状态 |
 |---|---|---|---|
 | **D1 触发** | 单一比例：`floor(min(W×thresholdRatio, W−O−headroomTokens))`，`thresholdRatio=0.8`、`headroom=65536` | **三段式**：`full = floor(W×0.95)`；`limit = min(triggerLimitTokens ?? ∞, floor(W×0.9))`；触发 = `scope≥limit+buffer \|\| active≥full`；另有独立轮末百分比（默认 0=关） | 已实现 #4 |
 | **D1 溢出** | `agent/request-error` → 旁路阈值，一次最大平衡头部缩减 | 相同语义（`overflowRecovery: true`），由引擎转成 `context-overflow` 触发 | 已实现 #4 |
