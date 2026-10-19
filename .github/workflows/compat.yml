@@ -16,7 +16,7 @@ on:
       - 'package.json'
       - 'cordis.patch.yml'
       - 'lib/**'
-      - 'scripts/smoke-runtime.mjs'
+      - 'scripts/**'
       - '.github/workflows/compat.yml'
 
 permissions:
@@ -77,3 +77,12 @@ jobs:
         run: |
           "$DSH_BIN" --profile ci-schema --from-default-profile headless --dump-config-schema > "$RUNNER_TEMP/schema.json"
           node -e "const s=require('node:fs').readFileSync(process.env.RUNNER_TEMP+'/schema.json','utf8'); for (const key of ['insert','disabled']) { if (!s.includes(key)) { console.error('patch schema no longer mentions: '+key); process.exit(1) } } console.log('patch schema still exposes insert/disabled')"
+
+      # Preset roster drift, measured against the prerelease: the early signal
+      # that @deepseek-ai/dsh-web-app changed the preset preset-codex is
+      # generated from (scripts/preset-anchors.json). Non-gating by construction,
+      # because this job is continue-on-error.
+      - name: Preset anchor drift vs dsh@next
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-next/bin/dsh
+        run: bash scripts/preset-drift-check.sh
