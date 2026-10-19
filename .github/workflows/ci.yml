@@ -105,3 +105,38 @@ jobs:
         env:
           DSH_BIN: ${{ runner.temp }}/dsh-next/bin/dsh
         run: bash scripts/smoke-dumpconfig.sh
+
+  # Preset drift guard (task-23). NOT a required check: it needs a real dsh
+  # install, so a registry outage must never turn the gate red. What it adds is
+  # the one thing the zero-install jobs cannot see: whether the anchor recorded
+  # in scripts/preset-anchors.json still matches the upstream preset this repo
+  # generates preset-codex from (plus the generator's own reverse proofs).
+  preset-drift:
+    name: ci / preset-drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # Best effort on purpose: a registry outage downgrades this job to
+      # INCOMPLETE (reported, never called PASS), it does not fail the gate.
+      - name: Install the pinned dsh baseline (best effort)
+        continue-on-error: true
+        run: |
+          BASELINE="$(node -p "require('./scripts/preset-anchors.json').baseline")"
+          echo "installing @deepseek-ai/dsh@$BASELINE"
+          npm install --global --prefix "$RUNNER_TEMP/dsh-anchor" "@deepseek-ai/dsh@$BASELINE"
+
+      - name: Anchor check for the upstream preset
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-anchor/bin/dsh
+        run: bash scripts/preset-drift-check.sh
+
+      # Reverse proofs: a tampered anchor, a simulated upstream change and a lost
+      # retarget row must each fail, and a missing source must report INCOMPLETE.
+      - name: Preset generator reverse proofs
+        env:
+          DSH_BIN: ${{ runner.temp }}/dsh-anchor/bin/dsh
+        run: bash scripts/preset-drift-check.sh --selftest
