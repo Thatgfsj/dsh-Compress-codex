@@ -158,3 +158,17 @@ jobs:
         env:
           DSH_BIN: ${{ runner.temp }}/dsh-anchor/bin/dsh
         run: bash scripts/preset-drift-check.sh --offline
+
+      # Documentation provenance (#68). Needs no dsh, so it runs even when the
+      # install above failed: the check is about THIS repository's docs agreeing
+      # with THIS repository's source, not about the vendor preset.
+      #
+      # It is a step here rather than a new job to keep the non-gate surface
+      # small, but the same assertions also run inside the required matrix via
+      # test/doc-provenance.test.mjs, so a violating README cannot merge.
+      #
+      # The command includes its own reverse proofs (a violation must go red, a
+      # meta statement must stay green) and prints the scanned file count, so a
+      # green run cannot be an empty scan.
+      - name: Doc provenance check (#68)
+        run: node scripts/doc-provenance-check.mjs
