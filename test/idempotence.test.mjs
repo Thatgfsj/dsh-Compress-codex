@@ -5,12 +5,21 @@ import { createCodexCompactionEngine } from "../lib/engine.js"
 import { CODEX_SUMMARY_FIELDS, EXTRA_SUMMARY_FIELDS, SUMMARY_PREFIX } from "../lib/core/prompt.js"
 import { createFakeBase, createFakeCtx } from "./support/fake-base.mjs"
 import {
+  REAL_CHAINED_SUMMARY,
+  REAL_CHAINED_SUMMARY_WITHOUT_PITFALLS,
+  REAL_SECTION_HEADINGS
+} from "./support/chain-summary-fixtures.mjs"
+import { NO_CONTENT_CODE } from "../lib/core/summarize.js"
+import { NON_RETRYABLE_SUMMARY_CODES, decideCompactionFailure } from "../lib/core/errors.js"
+import {
   CHAIN_DIRECTIVES,
   CHAIN_MODES,
   CORE_FIELD_IDS,
+  FIELD_HEADING_ALIASES,
   OPTIONAL_FIELD_IDS,
   admitCompaction,
   assertAntiDrift,
+  auditAntiDrift,
   checkpointPositions,
   createCompactionLedger,
   defaultFieldMatcher,
@@ -19,6 +28,7 @@ import {
   missingCarryFields,
   planChainedSummary,
   requiredCarryFields,
+  sectionHeadings,
   summaryFingerprint
 } from "../lib/core/idempotence.js"
 
@@ -239,7 +249,19 @@ const plainEvent = (seq, text) => ({
   data: { message: { role: "user", content: [{ type: "text", text }] } }
 })
 
-function mountEngine({ events = [], hooks = {}, helpers } = {}) {
+/** A ctx whose logger records what the engine reports, with the payload. */
+function recordingCtx() {
+  const logged = []
+  const ctx = createFakeCtx()
+  ctx.logger = {
+    info: () => {},
+    warn: (message, payload) => logged.push({ message, payload }),
+    error: (message, payload) => logged.push({ message, payload })
+  }
+  return { ctx, logged }
+}
+
+function mountEngine({ events = [], hooks = {}, helpers, ctx } = {}) {
   const { FakeBase, calls } = createFakeBase()
   const Engine = createCodexCompactionEngine(
     FakeBase,
@@ -252,7 +274,7 @@ function mountEngine({ events = [], hooks = {}, helpers } = {}) {
     helpers
   )
   const agent = { session: sessionOf(events), options: { provider: "acme", model: "big" } }
-  return { engine: new Engine(createFakeCtx(), {}), calls, agent }
+  return { engine: new Engine(ctx === undefined ? createFakeCtx() : ctx, {}), calls, agent }
 }
 
 test("engine R1: a region holding only a checkpoint is never re-summarized", async () => {
@@ -271,7 +293,7 @@ test("engine idempotence: the same range with the same content compacts once", a
   assert.deepEqual(calls, [["compactRegion", 1, 9]], "the repeat must not open a second transaction")
 })
 
-test("engine anti-drift: a chained summary that loses a field is refused", async () => {
+test("engine anti-drift: a chained summary that loses a field is reported, not fatal", async () => {
   const input = {
     messages: [
       {
@@ -285,14 +307,18 @@ test("engine anti-drift: a chained summary that loses a field is refused", async
   const degraded = async () => ({ summary: [{ type: "text", text: render(["progress"]) }] })
   const faithful = async () => ({ summary: [{ type: "text", text: render([...CORE_FIELD_IDS, "files"]) }] })
 
+  // issue #50: detection stays strict, the consequence is no longer fatal.
+  const { ctx, logged } = recordingCtx()
   const strict = mountEngine({
+    ctx,
     hooks: { buildSummaryRequest: () => request },
     helpers: { runSummarization: degraded }
   })
-  await assert.rejects(
-    () => strict.engine.summarize(input, strict.agent, undefined),
-    /dropped required field\(s\) .*files/
-  )
+  const kept = await strict.engine.summarize(input, strict.agent, undefined)
+  assert.equal(kept.summary[0].text, render(["progress"]), "the checkpoint is kept")
+  assert.equal(logged.length, 1, "the drift leaves exactly one diagnostic")
+  assert.match(logged[0].message, /did not account for field\(s\)/)
+  assert.deepEqual(logged[0].payload.missing, ["context", "next-steps", "references", "files"])
 
   const lenient = mountEngine({
     hooks: { buildSummaryRequest: () => request },
@@ -312,6 +338,98 @@ test("engine anti-drift does not audit a fresh summary", async () => {
   })
   const result = await fresh.engine.summarize(input, fresh.agent, undefined)
   assert.equal(result.summary[0].text, "anything at all")
+})
+
+/* ------------------------------------------------------------------ */
+/* issue #50: the regression fixture taken from REAL model output      */
+/* ------------------------------------------------------------------ */
+
+test("REAL FIXTURE: a chained summary worded in Chinese still carries every field", () => {
+  // The genuine checkpoint body from session-292e6b17. Every field is present, under
+  // Chinese headings — the case our own strictly-templated fixtures could never reach,
+  // and which made 5 of 9 real attempts fail.
+  assert.deepEqual([...extractFields(REAL_CHAINED_SUMMARY)], [...CORE_FIELD_IDS, ...OPTIONAL_FIELD_IDS])
+  const audit = auditAntiDrift([...CORE_FIELD_IDS, ...OPTIONAL_FIELD_IDS], REAL_CHAINED_SUMMARY)
+  assert.equal(audit.action, "ok")
+  assert.deepEqual([...audit.missing], [])
+})
+
+test("REAL FIXTURE: the headings it used are exactly the shapes the matcher reads", () => {
+  assert.deepEqual([...sectionHeadings(REAL_CHAINED_SUMMARY)], [...REAL_SECTION_HEADINGS])
+  assert.ok(REAL_SECTION_HEADINGS.includes("## 当前任务与状态"))
+  assert.ok(REAL_SECTION_HEADINGS.includes("## 已知陷阱"))
+})
+
+test("REAL FIXTURE: the plan requires every field the real checkpoint carried", () => {
+  const plan = planChainedSummary({
+    checkpoints: [{ seq: 11, text: REAL_CHAINED_SUMMARY }],
+    newMessageCount: 3
+  })
+  assert.equal(plan.mode, "chain")
+  assert.deepEqual([...plan.requiredFields], [...CORE_FIELD_IDS, ...OPTIONAL_FIELD_IDS])
+})
+
+test("REAL FIXTURE: the engine reports no drift, so the chain is no longer aborted", async () => {
+  const input = {
+    messages: [
+      { role: "user", content: [{ type: "text", text: SUMMARY_PREFIX + "\n" + REAL_CHAINED_SUMMARY }] },
+      { role: "user", content: [{ type: "text", text: "new work happened" }] }
+    ]
+  }
+  const request = { prompt: "p", projection: (blocks) => blocks }
+  const reworded = async () => ({ summary: [{ type: "text", text: REAL_CHAINED_SUMMARY }] })
+  const { ctx, logged } = recordingCtx()
+  const run = mountEngine({ ctx, hooks: { buildSummaryRequest: () => request }, helpers: { runSummarization: reworded } })
+  const result = await run.engine.summarize(input, run.agent, undefined)
+  assert.equal(result.summary[0].text, REAL_CHAINED_SUMMARY)
+  assert.deepEqual(logged, [], "equivalent wording must not be reported as drift")
+})
+
+test("REAL FIXTURE reverse: a section that really is gone is still caught", async () => {
+  const required = [...CORE_FIELD_IDS, ...OPTIONAL_FIELD_IDS]
+  const audit = auditAntiDrift(required, REAL_CHAINED_SUMMARY_WITHOUT_PITFALLS)
+  assert.equal(audit.action, "degrade", "the detection must not have been loosened away")
+  assert.deepEqual([...audit.missing], ["pitfalls"])
+
+  const input = {
+    messages: [
+      { role: "user", content: [{ type: "text", text: SUMMARY_PREFIX + "\n" + REAL_CHAINED_SUMMARY }] },
+      { role: "user", content: [{ type: "text", text: "new work happened" }] }
+    ]
+  }
+  const request = { prompt: "p", projection: (blocks) => blocks }
+  const truncated = async () => ({ summary: [{ type: "text", text: REAL_CHAINED_SUMMARY_WITHOUT_PITFALLS }] })
+  const { ctx, logged } = recordingCtx()
+  const run = mountEngine({ ctx, hooks: { buildSummaryRequest: () => request }, helpers: { runSummarization: truncated } })
+  await run.engine.summarize(input, run.agent, undefined)
+  assert.equal(logged.length, 1)
+  assert.deepEqual(logged[0].payload.missing, ["pitfalls"])
+})
+
+test("the alias table never matches ordinary prose", () => {
+  const prose = "我们在讨论 progress 与 files 这两件事，但完全没有章节标题。"
+  assert.deepEqual([...extractFields(prose)], [], "prose must not be mistaken for a section")
+  assert.ok(FIELD_HEADING_ALIASES.progress.includes("当前任务与状态"))
+  assert.ok(FIELD_HEADING_ALIASES.pitfalls.includes("已知陷阱"))
+})
+
+/* ------------------------------------------------------------------ */
+/* issue #50 defect B: a no-text summary is not worth retrying         */
+/* ------------------------------------------------------------------ */
+
+test("defect B: a no-text summary degrades immediately instead of retrying", () => {
+  const noContent = Object.assign(new Error("summarization produced no text summary content"), {
+    code: NO_CONTENT_CODE
+  })
+  assert.deepEqual([...NON_RETRYABLE_SUMMARY_CODES], [NO_CONTENT_CODE])
+  assert.equal(
+    decideCompactionFailure(noContent, 0),
+    "degrade",
+    "re-issuing the same request cannot conjure text; the next step's trigger retries on a fresh request"
+  )
+  // A generic summary failure still spends the single retry #10 allows.
+  assert.equal(decideCompactionFailure(new Error("transport hiccup"), 0), "retry")
+  assert.equal(decideCompactionFailure(new Error("transport hiccup"), 1), "degrade")
 })
 
 test("the duplicate check is read-only, so a failed compaction can be retried", () => {
