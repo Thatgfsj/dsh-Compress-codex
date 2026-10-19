@@ -181,6 +181,70 @@ function resolveSource(base, explicit) {
 }
 
 /**
+ * The isolated compaction flag and the nested compaction row must belong to the
+ * SAME group. Counting the row globally is not enough: it can still be
+ * "exactly 1" while sitting outside the group, and retargeting it there would
+ * change an unrelated service.
+ *
+ * INDUCTIVE TRAP, do not "simplify" this: match by exact indent, never by
+ * counting lines in the region. The group's own children (isolate:/config:) are
+ * at gi+2 and the isolate flag at gi+4 -- but nested rows inside the group's
+ * config: carry their OWN config: blocks (command-compact, tool-result-pruner)
+ * whose lines match a bare /^\s*config:$/ too. A "config: appears exactly once
+ * in the region" rule therefore FAILS on standard/ptc/cordis today. Every match
+ * below is indent-exact for that reason.
+ *
+ * The message prefix says which rule fired:
+ *   GLOBAL: ...  the row is duplicated or missing anywhere in the patch
+ *   GROUP:  ...  the row exists exactly once but is not inside the group
+ */
+function assertCompactionRowScoped(bodyLines) {
+  const indentOf = (line) => /^(\s*)/.exec(line)[1].length
+  const rowRe = /^(\s*)- id:\s*compaction-basic\s*$/
+  const global = bodyLines.filter((line) => rowRe.test(line)).length
+  if (global !== 1) {
+    throw new Error('GLOBAL: "- id: compaction-basic" rows = ' + global + ' (want exactly 1)')
+  }
+
+  const heads = []
+  bodyLines.forEach((line, index) => {
+    if (/^(\s*)- id:\s*compaction\s*$/.test(line)) heads.push(index)
+  })
+  if (heads.length !== 1) {
+    throw new Error('GROUP: "- id: compaction" groups = ' + heads.length + ' (want exactly 1)')
+  }
+  const groupIndent = indentOf(bodyLines[heads[0]])
+  let end = bodyLines.length // a group may legitimately be the last entry in the patch
+  for (let i = heads[0] + 1; i < bodyLines.length; i += 1) {
+    if (bodyLines[i].trim() === '') continue
+    if (indentOf(bodyLines[i]) <= groupIndent) {
+      end = i
+      break
+    }
+  }
+  const region = bodyLines.slice(heads[0], end)
+  const child = groupIndent + 2
+  const flagIndent = groupIndent + 4
+  const countAt = (re, want) => region.filter((line) => indentOf(line) === want && re.test(line)).length
+  const indexAt = (re, want) => region.findIndex((line) => indentOf(line) === want && re.test(line))
+
+  const isolates = countAt(/^\s*isolate:\s*$/, child)
+  if (isolates !== 1) throw new Error('GROUP: isolate: at indent ' + child + ' = ' + isolates + ' (want exactly 1)')
+  const flags = countAt(/^\s*compaction:\s*true\s*$/, flagIndent)
+  if (flags !== 1) throw new Error('GROUP: compaction: true at indent ' + flagIndent + ' = ' + flags + ' (want exactly 1)')
+  const configs = countAt(/^\s*config:\s*$/, child)
+  if (configs !== 1) throw new Error('GROUP: group config: at indent ' + child + ' = ' + configs + ' (want exactly 1)')
+
+  const flagAt = indexAt(/^\s*compaction:\s*true\s*$/, flagIndent)
+  const configAt = indexAt(/^\s*config:\s*$/, child)
+  if (configAt < flagAt) throw new Error('GROUP: group config: precedes compaction: true')
+  const nested = region.filter((line, index) => index > configAt && indentOf(line) > child && rowRe.test(line)).length
+  if (nested !== 1) {
+    throw new Error('GROUP: "compaction-basic" nested under the group config: = ' + nested + ' (want exactly 1)')
+  }
+}
+
+/**
  * Rewrite the upstream patch into preset-codex. Counted, exact-match rules: any
  * upstream shape change makes one of the counts wrong and fails loud instead of
  * emitting a half-retargeted preset.
@@ -193,6 +257,9 @@ function transform(text, options) {
   if (insertAt === -1) throw new Error('upstream file has no top-level "- insert:" patch')
   let body = lines.slice(insertAt)
   const changes = []
+  // Placement, not just count: the retarget below only makes sense when the row
+  // really is inside the isolated compaction group (see the trap in the helper).
+  assertCompactionRowScoped(body)
 
   const rewrite = (label, pattern, build) => {
     let seen = 0
@@ -353,6 +420,60 @@ function main() {
 }
 
 /**
+ * ptc-specific preservation checks, as a pure function so the selftest can also
+ * prove they BITE (see the mutation cases below).
+ *
+ * Discipline -- a skip is not a pass: every preservation check reads the SOURCE
+ * first and refuses to pass when the source has nothing to preserve. Without
+ * that, upstream deleting the row would turn "the output still has it" into a
+ * vacuous truth, which is exactly the empty-set trap this repo has been bitten
+ * by before.
+ *
+ * The retarget row (compaction-basic -> compaction-codex) is deliberately NOT
+ * in here: the upstream has no compaction-codex, so there is no source fact to
+ * anchor on -- that one is asserted output-side instead.
+ */
+function ptcPreservationFailures(sourceText, outputText) {
+  const rows = (text) => text.split(/\r?\n/)
+  const count = (text, re) => rows(text).filter((line) => re.test(line)).length
+  const failures = []
+  const preserve = (label, re) => {
+    const want = count(sourceText, re)
+    if (want === 0) {
+      failures.push('SOURCE: ' + label + ' count = 0 (nothing to preserve -> refuse to pass)')
+      return
+    }
+    const got = count(outputText, re)
+    if (got !== want) failures.push('OUTPUT: ' + label + ' count = ' + got + ' != source ' + want)
+  }
+  preserve('mode: ptc', /^\s*mode:\s*ptc\s*$/)
+  preserve('tool-presentation row', /^\s*- id:\s*tool-presentation\s*$/)
+
+  // workflow-ptc / tool-workflow must keep their own disabled: true, which is
+  // a property of the row, not a file-wide count.
+  const rowIsDisabled = (text, rowId) => {
+    const list = rows(text)
+    const at = list.findIndex((line) => new RegExp('^(\\s*)- id:\\s*' + rowId + '\\s*$').test(line))
+    if (at === -1) return false
+    const rowIndent = /^(\s*)/.exec(list[at])[1].length
+    for (let i = at + 1; i < list.length && i <= at + 4; i += 1) {
+      if (list[i].trim() === '') continue
+      if (/^(\s*)/.exec(list[i])[1].length <= rowIndent) break
+      if (/^\s*disabled:\s*true\s*$/.test(list[i])) return true
+    }
+    return false
+  }
+  for (const rowId of ['workflow-ptc', 'tool-workflow']) {
+    if (!rowIsDisabled(sourceText, rowId)) {
+      failures.push('SOURCE: ' + rowId + ' has no disabled: true (nothing to preserve -> refuse to pass)')
+    } else if (!rowIsDisabled(outputText, rowId)) {
+      failures.push('OUTPUT: ' + rowId + ' lost disabled: true')
+    }
+  }
+  return failures
+}
+
+/**
  * Fault injection: prove the anchor check and the shape checks can fail. Runs
  * against a throwaway copy of the real upstream file, so it never touches the
  * repository or the installed dsh.
@@ -456,6 +577,81 @@ function selftest() {
     writeFileSync(source, changed.replace('- id: compaction-basic', '- id: compaction-renamed'))
     writeAnchors(anchors, { baseline: 'selftest', sources: { [base]: sha256(readFileSync(source, 'utf8')) } })
     expectExit('lost retarget row fails', EXIT_FAIL, baseArgs.concat(['--out', out]))
+
+
+    // ---- ptc battery (#60) -------------------------------------------------
+    // ptc is the base users actually run, and it differs from standard in three
+    // places: the tool-presentation row with mode: ptc, and workflow-ptc /
+    // tool-workflow carrying disabled: true. This proves (a) the anchor table
+    // can hold a second base, (b) those rows survive the copy, and (c) every
+    // check above actually bites.
+    const ptcSibling = join(dirname(resolved.path), 'ptc.patch.yml')
+    const ptcPath = existsSync(ptcSibling) ? ptcSibling : resolveSource('ptc', undefined).path
+    if (ptcPath === undefined) {
+      console.log('PRESET-SYNC SELFTEST: INCOMPLETE (no ptc.patch.yml next to the resolved preset source)')
+      return EXIT_INCOMPLETE
+    }
+    const ptcSource = join(dir, 'ptc-selftest.patch.yml')
+    const ptcAnchors = join(dir, 'anchors-ptc.json')
+    const ptcOut = join(dir, 'ptc-out.yml')
+    copyFileSync(ptcPath, ptcSource)
+    const ptcText = readFileSync(ptcSource, 'utf8')
+    const ptcArgs = ['--base', 'ptc', '--source', ptcSource, '--anchors', ptcAnchors]
+    writeAnchors(ptcAnchors, { baseline: 'selftest', sources: { ptc: sha256(ptcText) } })
+
+    // (a) a second base needs its own anchor entry; standard's must not serve it.
+    expectExit('ptc source generates', EXIT_OK, ptcArgs.concat(['--out', ptcOut]))
+    const ptcGenerated = readFileSync(ptcOut, 'utf8')
+
+    // (b) preservation, source fact first (see ptcPreservationFailures).
+    const ptcMisses = ptcPreservationFailures(ptcText, ptcGenerated)
+    record(
+      'ptc output preserves mode/tool-presentation/disabled rows',
+      ptcMisses.length === 0,
+      ptcMisses.length === 0 ? EXIT_OK : 99,
+      EXIT_OK
+    )
+    if (ptcMisses.length > 0) console.log('PRESET-SYNC SELFTEST:      ' + ptcMisses.join('; '))
+
+    // retarget class: output-side only -- upstream has no compaction-codex.
+    const ptcRetargeted = (text) =>
+      text.split(/\r?\n/).filter((line) => /^\s*- id:\s*compaction-codex\s*$/.test(line)).length === 1 &&
+      !text.includes('@deepseek-ai/dsh-compaction-basic')
+    record('ptc output retargets the compaction row', ptcRetargeted(ptcGenerated), ptcRetargeted(ptcGenerated) ? EXIT_OK : 99, EXIT_OK)
+
+    // (c) every check above must bite: mutate a GOOD output and require a report.
+    const bites = (label, sourceText, outputTexts) => {
+      const misses = ptcPreservationFailures(sourceText, outputTexts)
+      record('ptc check catches ' + label, misses.length > 0, misses.length, 1)
+    }
+    bites('mode: ptc -> native', ptcText, ptcGenerated.replace(/^(\s*)mode:\s*ptc\s*$/m, '$1mode: native'))
+    bites('a deleted disabled row', ptcText, ptcGenerated.replace(/^(\s*)disabled:\s*true\s*$\n?/m, ''))
+    bites(
+      'a source with no mode: ptc (empty-set trap)',
+      ptcText.replace(/^(\s*)mode:\s*ptc\s*$/m, ''),
+      ptcGenerated
+    )
+    const untargeted = ptcGenerated.replace('compaction-codex', 'compaction-basic')
+    const untargetedCaught = !ptcRetargeted(untargeted)
+    record('ptc check catches compaction-codex -> compaction-basic', untargetedCaught, untargetedCaught ? 1 : 0, 1)
+
+    // (d) placement rules: the row is still "exactly 1" but leaves the group ->
+    // GROUP; a duplicated row -> GLOBAL. Assert the PREFIX, not just the exit
+    // code, so the two rules can never be mistaken for each other.
+    const movedOut = ptcText.replace(/^(\s*)- id:\s*compaction-basic\s*$/m, (line) => line.trim())
+    const duplicated = ptcText.replace(/^(\s*)- id:\s*compaction-basic\s*$/m, (line) => line + String.fromCharCode(10) + line)
+    const expectPrefix = (label, mutated, prefix) => {
+      writeFileSync(ptcSource, mutated)
+      writeAnchors(ptcAnchors, { baseline: 'selftest', sources: { ptc: sha256(mutated) } })
+      const result = run(ptcArgs.concat(['--out', ptcOut]))
+      record('ptc ' + label, result.status === EXIT_FAIL && result.stderr.includes(prefix), result.status, EXIT_FAIL)
+    }
+    expectPrefix('row outside the group fails with GROUP:', movedOut, 'GROUP:')
+    expectPrefix('duplicated row fails with GLOBAL:', duplicated, 'GLOBAL:')
+
+    // (e) the ptc anchor is verified like any other.
+    writeAnchors(ptcAnchors, { baseline: 'selftest', sources: { ptc: 'f'.repeat(64) } })
+    expectExit('a tampered ptc anchor fails', EXIT_FAIL, ptcArgs.concat(['--check']))
 
     rmSync(anchors, { force: true })
     expectExit('missing anchor fails', EXIT_FAIL, baseArgs.concat(['--check']))

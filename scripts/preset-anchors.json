@@ -4,6 +4,7 @@
   "baseline": "0.2.1-rc.2",
   "//sources": "Keyed by --base name; value = sha256 of <dsh>/node_modules/@deepseek-ai/dsh-web-app/presets/<base>.patch.yml",
   "sources": {
-    "standard": "0d398d2a6872a73a106cb3bd19303ecccf1637e1fcad4d0bf9d8a72d2c2c68f5"
+    "standard": "0d398d2a6872a73a106cb3bd19303ecccf1637e1fcad4d0bf9d8a72d2c2c68f5",
+    "ptc": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c"
   }
 }
