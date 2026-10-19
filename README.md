@@ -1,7 +1,14 @@
 # dsh-compress-codex
 
 A DSH **bundle** that replaces the compaction policy behind the `ctx.compaction` seam
-with a **Codex-style** one — same DSH transaction contract, different strategy.
+with one whose **D1–D5 policy dimensions follow Codex** — same DSH transaction contract,
+different strategy.
+
+> **Provenance, stated precisely.** D1 (trigger) and D4 (summary prompt) are Codex-derived, as are
+> parts of D2/D5. **D3 (retention) and the anti-drift / idempotence layer (#9) are DSH-original** —
+> Codex has *no explicit anti-drift mechanism*, so describing the whole plugin as "Codex-style" is
+> wrong. See [`docs/codex-dsh-mapping.md`](docs/codex-dsh-mapping.md) §4: `lib/core/idempotence.js`
+> is explicitly *not* a Codex port.
 
 - Policy dimensions **D1 触发 / D2 切分 / D3 保留 / D4 摘要 / D5 注入**: [`docs/PLAN.md`](docs/PLAN.md) §1.3
 - Codex source-level spec (every claim carries file+line evidence): [`docs/codex-notes.md`](docs/codex-notes.md)
@@ -29,7 +36,7 @@ three properties this project treats as defects ([`docs/PLAN.md`](docs/PLAN.md) 
 | # | Official behaviour | Why it hurts |
 |---|---|---|
 | 1 | Retention is a **token ratio** (`retainRatio: 0.16` of `W − O`) | It cannot tell "the last three task turns" from "50k tokens of older tool logs". Structure is not modelled. |
-| 2 | The summary is **free text** | There is no stable, resumable field set (progress / decisions / next steps / files touched), so a resumed session relearns context. |
+| 2 | The summary is **free text** | There is no stable, resumable field set, so a resumed session relearns context. This plugin uses **Codex's four bullets** (progress and key decisions / context, constraints and preferences / what remains to be done / critical data and references) **plus two DSH-original fields** (`files`, `pitfalls`) that Codex does not have. |
 | 3 | Repeated compaction has **no drift convention** | Each round re-encodes; quality decays silently. |
 
 Codex answers all three — but only some of its answers survive DSH's contract constraints
@@ -100,7 +107,7 @@ fail at mount time instead of silently behaving like the default.
 | `retainMode` | `'structural'` | Retention by dialogue structure, not by token ratio |
 | `retainRecentUnits` | `3` | Recent structural units kept verbatim |
 | `retainTokens` | — | **Soft** ceiling: whole units in or out, never half a tool pair |
-| `summaryTemplate` | `'codex-v1'` | Template version, for measuring drift |
+| `summaryTemplate` | `'codex-v1'` | Template version for measuring drift. **The id is ours**, not Codex's — Codex has no template-version concept |
 | `summaryExtraFields` | `['files','pitfalls']` | Codex's four fields + our two |
 
 Defaults and rationale: [`docs/codex-impl-checklist.md`](docs/codex-impl-checklist.md) §1.1.
@@ -184,7 +191,7 @@ dsh --profile <p> --patch <overlay.yml> </dev/null
 
 ## 6. Status: what works today
 
-| Dimension | Codex target | State |
+| Dimension | Target | State |
 |---|---|---|
 | D1 trigger | three-stage (`0.9` / `0.95` / turn-end / buffer) | **implemented** (#4) |
 | D2 split | structural units, C1-paired cuts | **implemented** (#5) |

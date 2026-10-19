@@ -9,7 +9,7 @@
 
 ## 0. 一句话
 
-一个**侵入 DSH 压缩层**（`ctx.compaction` 服务接缝）的插件：把官方 `@deepseek-ai/dsh-compaction-basic` 的**触发 / 切分 / 保留 / 摘要 / 注入**五维策略替换为 Codex 风格策略，同时**保留** DSH 既有的持久化事务契约与 `/compact` 命令兼容。
+一个**侵入 DSH 压缩层**（`ctx.compaction` 服务接缝）的插件：把官方 `@deepseek-ai/dsh-compaction-basic` 的**触发 / 切分 / 保留 / 摘要 / 注入**五维策略替换为 Codex 策略（逐维可照搬性见 §1.3；其中 D3 与 #9 防漂移为 DSH 自研，Codex 无对应机制），同时**保留** DSH 既有的持久化事务契约与 `/compact` 命令兼容。
 
 ---
 
